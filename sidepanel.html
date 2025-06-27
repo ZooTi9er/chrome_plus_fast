@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Side Panel</title>
+  <link rel="stylesheet" href="sidepanel.css">
+  <!-- 添加 marked.js 用于 Markdown 渲染 -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <!-- 添加 highlight.js 用于代码高亮 -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+</head>
+<body>
+  <div id="chat-container">
+    <div class="header">
+      <h1>AI助手</h1>
+      <div class="header-buttons">
+        <button id="settings-button" title="设置">⚙️</button>
+      </div>
+    </div>
+    <div id="chat-box">
+      <!-- Messages will be appended here -->
+    </div>
+    <div id="input-container">
+      <input type="text" id="message-input" placeholder="输入你的消息...">
+      <button id="send-button">发送</button>
+    </div>
+  </div>
+
+  <!-- 设置模态框 -->
+  <div id="settings-modal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>模型设置</h2>
+        <span class="close">&times;</span>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="api-endpoint">API端点:</label>
+          <input type="text" id="api-endpoint" placeholder="https://api.openai.com 或 https://your-api.com">
+          <small class="help-text">
+            输入基础URL即可，系统会自动添加 /v1/chat/completions 路径<br>
+            例如：https://api.openai.com 或 https://gemini.ewuzhe.dpdns.org
+          </small>
+        </div>
+        <div class="form-group">
+          <label for="api-key">API密钥:</label>
+          <input type="password" id="api-key" placeholder="sk-...">
+          <small class="help-text">请输入有效的API密钥</small>
+        </div>
+        <div class="form-group">
+          <label for="model-name">模型名称:</label>
+          <input type="text" id="model-name" placeholder="gpt-3.5-turbo">
+          <small class="help-text">
+            常用模型：gpt-3.5-turbo, gpt-4, gemini-pro, claude-3-sonnet 等
+          </small>
+        </div>
+        <div class="form-group">
+          <button id="test-connection">测试连接</button>
+          <button id="save-settings">保存设置</button>
+          <button id="reset-settings">重置为默认</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script src="api.js"></script>
+  <script src="chat.js"></script>
+</body>
+</html>

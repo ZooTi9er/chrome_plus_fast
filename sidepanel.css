@@ -1,0 +1,481 @@
+body {
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  display: flex;
+  flex-direction: column; /* Changed to column for chat layout */
+  justify-content: flex-end; /* Align content to bottom */
+  height: 100vh;
+  margin: 0;
+  background-color: #f0f0f0;
+  color: #333;
+  padding: 10px; /* Add some padding */
+  box-sizing: border-box; /* Include padding in element's total width and height */
+}
+
+#chat-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%; /* Take full height */
+  width: 100%;
+  max-width: 400px; /* Optional: limit width for better readability */
+  margin: 0 auto; /* Center the chat container */
+  border: 1px solid #ccc;
+  border-radius: 8px;
+  overflow: hidden;
+  background-color: #fff;
+}
+
+#chat-box {
+  flex-grow: 1; /* Takes available space */
+  padding: 10px;
+  overflow-y: auto; /* Enable scrolling for messages */
+  display: flex;
+  flex-direction: column;
+}
+
+.message-wrapper {
+  display: flex;
+  align-items: flex-start;
+  margin-bottom: 8px;
+  position: relative;
+}
+
+.message {
+  padding: 8px 12px;
+  border-radius: 15px;
+  max-width: 80%;
+  word-wrap: break-word;
+  flex-grow: 1;
+}
+
+.message-wrapper .message.user {
+  align-self: flex-end;
+  background-color: #007bff;
+  color: white;
+  border-bottom-right-radius: 2px;
+}
+
+.message-wrapper .message.llm {
+  align-self: flex-start;
+  background-color: #f8f9fa;
+  color: #333;
+  border-bottom-left-radius: 2px;
+  border-left: 3px solid #007bff;
+}
+
+.message-copy-button {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 14px;
+  margin-left: 8px;
+  padding: 4px;
+  border-radius: 4px;
+  opacity: 0.6;
+  transition: opacity 0.2s;
+}
+
+.message-copy-button:hover {
+  opacity: 1;
+  background-color: rgba(0, 0, 0, 0.1);
+}
+
+/* Header styles */
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 15px;
+  background-color: #fff;
+  border-bottom: 1px solid #e0e0e0;
+  margin: -10px -10px 10px -10px;
+}
+
+.header h1 {
+  margin: 0;
+  font-size: 18px;
+  color: #333;
+}
+
+.header-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.header-buttons button {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 16px;
+  padding: 4px;
+  border-radius: 4px;
+  transition: background-color 0.2s;
+}
+
+.header-buttons button:hover {
+  background-color: rgba(0, 0, 0, 0.1);
+}
+
+/* Modal styles */
+.modal {
+  display: none;
+  position: fixed;
+  z-index: 1000;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0, 0, 0, 0.5);
+}
+
+.modal-content {
+  background-color: #fff;
+  margin: 15% auto;
+  padding: 0;
+  border-radius: 8px;
+  width: 80%;
+  max-width: 400px;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 15px 20px;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.modal-header h2 {
+  margin: 0;
+  font-size: 18px;
+  color: #333;
+}
+
+.close {
+  color: #aaa;
+  font-size: 24px;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+.close:hover {
+  color: #000;
+}
+
+.modal-body {
+  padding: 20px;
+}
+
+.form-group {
+  margin-bottom: 15px;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 5px;
+  font-weight: bold;
+  color: #333;
+}
+
+.form-group input {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 14px;
+  box-sizing: border-box;
+}
+
+.help-text {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: #666;
+  line-height: 1.4;
+}
+
+.form-group button {
+  background-color: #007bff;
+  color: white;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 4px;
+  cursor: pointer;
+  margin-right: 8px;
+  font-size: 14px;
+}
+
+.form-group button:hover {
+  background-color: #0056b3;
+}
+
+#reset-settings {
+  background-color: #6c757d;
+}
+
+#reset-settings:hover {
+  background-color: #545b62;
+}
+
+#test-connection {
+  background-color: #28a745;
+}
+
+#test-connection:hover {
+  background-color: #218838;
+}
+
+/* Markdown渲染样式优化 */
+.message.llm h1, .message.llm h2, .message.llm h3, .message.llm h4, .message.llm h5, .message.llm h6 {
+  margin: 16px 0 8px 0;
+  color: #333;
+  font-weight: bold;
+}
+
+.message.llm h1 { font-size: 1.5em; }
+.message.llm h2 { font-size: 1.3em; }
+.message.llm h3 { font-size: 1.1em; }
+
+.message.llm p {
+  margin: 8px 0;
+  line-height: 1.5;
+}
+
+.message.llm ul, .message.llm ol {
+  margin: 8px 0;
+  padding-left: 20px;
+}
+
+.message.llm li {
+  margin: 4px 0;
+  line-height: 1.4;
+}
+
+.message.llm blockquote {
+  border-left: 4px solid #007bff;
+  margin: 12px 0;
+  padding: 8px 12px;
+  background-color: rgba(0, 123, 255, 0.1);
+  font-style: italic;
+}
+
+.message.llm code {
+  background-color: rgba(0, 0, 0, 0.1);
+  padding: 2px 4px;
+  border-radius: 3px;
+  font-family: 'Courier New', monospace;
+  font-size: 0.9em;
+}
+
+.message.llm pre {
+  background-color: #2d3748;
+  color: #e2e8f0;
+  padding: 12px;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin: 12px 0;
+  position: relative;
+}
+
+.message.llm pre code {
+  background: none;
+  padding: 0;
+  color: inherit;
+}
+
+.message.llm table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 12px 0;
+}
+
+.message.llm th, .message.llm td {
+  border: 1px solid #ddd;
+  padding: 8px;
+  text-align: left;
+}
+
+.message.llm th {
+  background-color: #f8f9fa;
+  font-weight: bold;
+}
+
+.message.llm strong {
+  font-weight: bold;
+}
+
+.message.llm em {
+  font-style: italic;
+}
+
+.message.llm a {
+  color: #007bff;
+  text-decoration: none;
+}
+
+.message.llm a:hover {
+  text-decoration: underline;
+}
+
+#input-container {
+  display: flex;
+  padding: 10px;
+  border-top: 1px solid #ccc;
+}
+
+#message-input {
+  flex-grow: 1;
+  padding: 10px;
+  border: 1px solid #ddd;
+  border-radius: 20px;
+  margin-right: 10px;
+  font-size: 1em;
+}
+
+#send-button {
+  background-color: #28a745;
+  color: white;
+  border: none;
+  border-radius: 20px;
+  padding: 10px 15px;
+  cursor: pointer;
+  font-size: 1em;
+  transition: background-color 0.2s;
+}
+
+#send-button:hover {
+  background-color: #218838;
+}
+
+/* Markdown 样式 */
+.message.llm h1, .message.llm h2, .message.llm h3, .message.llm h4, .message.llm h5, .message.llm h6 {
+  margin: 0.5em 0;
+  color: #333;
+}
+
+.message.llm p {
+  margin: 0.5em 0;
+  line-height: 1.5;
+}
+
+.message.llm ul, .message.llm ol {
+  margin: 0.8em 0;
+  padding-left: 1.5em;
+}
+
+.message.llm li {
+  margin: 0.3em 0;
+  line-height: 1.4;
+}
+
+.message.llm ul li {
+  list-style-type: none;
+  position: relative;
+}
+
+.message.llm ul li::before {
+  content: "•";
+  color: #007bff;
+  font-weight: bold;
+  position: absolute;
+  left: -1em;
+}
+
+.message.llm code {
+  background-color: #f4f4f4;
+  padding: 2px 4px;
+  border-radius: 3px;
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  font-size: 0.9em;
+}
+
+.message.llm pre {
+  background-color: #1a202c;
+  color: #e2e8f0;
+  padding: 1em;
+  border-radius: 8px;
+  overflow-x: auto;
+  margin: 0.8em 0;
+  position: relative;
+  border: 1px solid #2d3748;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.message.llm pre code {
+  background-color: transparent;
+  padding: 0;
+  color: inherit;
+  font-size: 0.85em;
+  line-height: 1.4;
+}
+
+.message.llm blockquote {
+  border-left: 4px solid #007bff;
+  margin: 0.5em 0;
+  padding-left: 1em;
+  color: #666;
+  font-style: italic;
+}
+
+.message.llm table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.5em 0;
+}
+
+.message.llm th, .message.llm td {
+  border: 1px solid #ddd;
+  padding: 8px;
+  text-align: left;
+}
+
+.message.llm th {
+  background-color: #f2f2f2;
+  font-weight: bold;
+}
+
+.message.llm strong {
+  font-weight: bold;
+}
+
+.message.llm em {
+  font-style: italic;
+}
+
+/* 复制按钮样式 */
+.copy-button {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background-color: #4a5568;
+  color: white;
+  border: none;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 0.75em;
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity 0.2s;
+}
+
+.copy-button:hover {
+  opacity: 1;
+  background-color: #2d3748;
+}
+
+/* 链接样式 */
+.message.llm a {
+  color: #007bff;
+  text-decoration: none;
+}
+
+.message.llm a:hover {
+  text-decoration: underline;
+}
+
+/* 水平分割线 */
+.message.llm hr {
+  border: none;
+  border-top: 1px solid #ddd;
+  margin: 1em 0;
+}

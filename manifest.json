@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "AI助手 Plus",
+  "version": "1.0",
+  "description": "智能AI助手Chrome扩展，支持多种AI模型，提供便捷的侧边栏聊天界面，支持Markdown渲染和代码高亮。",
+  "icons": {
+    "16": "images/icon-16.png",
+    "48": "images/icon-48.png",
+    "128": "images/icon-128.png"
+  },
+  "permissions": ["sidePanel", "storage"],
+  "host_permissions": ["http://localhost:5001/*"],
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "action": {
+    "default_title": "打开AI助手"
+  },
+  "background": {
+    "service_worker": "background.js"
+  }
+}
