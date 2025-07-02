@@ -18,6 +18,15 @@
 - **🎨 代码高亮**: 多种编程语言语法高亮
 - **⚙️ 灵活配置**: 自定义API端点和模型参数
 
+### 🌍 代理功能 (NEW!)
+- **🚀 地理位置限制解决**: 完美解决 "User location is not supported" 错误
+- **🔧 多协议支持**: HTTP、HTTPS、SOCKS5代理协议
+- **🔐 认证机制**: 完整的用户名/密码认证支持
+- **🧪 连接测试**: 一键测试代理连接状态和可用性
+- **📋 预设配置**: 常用代理配置快速应用
+- **💾 配置管理**: 支持配置文件导入/导出功能
+- **📊 状态监控**: 实时代理连接状态指示器
+
 ### 🛡️ 安全特性
 - **🔒 安全存储**: API密钥加密存储
 - **🚧 沙箱隔离**: 文件操作限制在安全目录
@@ -51,6 +60,9 @@ echo "DEEPSEEK_API_KEY=sk-your-key" > server/.env
 | 文档 | 描述 | 适用人群 |
 |------|------|----------|
 | [🚀 快速开始](QUICK_START.md) | 5分钟快速安装指南 | 所有用户 |
+| [🌍 代理功能指南](PROXY_USER_GUIDE.md) | 解决地理位置限制问题 | 所有用户 |
+| [📖 代理功能详解](PROXY_FEATURE_README.md) | 代理功能技术说明 | 开发者 |
+| [🎬 代理功能演示](PROXY_DEMO.md) | 完整功能演示文档 | 所有用户 |
 | [📖 开发者指南](DEVELOPER_GUIDE.md) | 完整的开发文档 | 开发者 |
 | [🏗️ 架构设计](ARCHITECTURE.md) | 系统架构说明 | 架构师 |
 | [📋 更新日志](CHANGELOG.md) | 版本更新记录 | 所有用户 |
@@ -71,6 +83,8 @@ echo "DEEPSEEK_API_KEY=sk-your-key" > server/.env
 - **uvicorn**: ASGI服务器
 - **pydantic**: 数据验证
 - **python-dotenv**: 环境变量管理
+- **httpx**: HTTP客户端，支持代理
+- **socksio**: SOCKS5代理支持
 
 ### AI集成
 - **DeepSeek API**: 主要AI模型
