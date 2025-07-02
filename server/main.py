@@ -11,7 +11,8 @@ import re       # 用于 find_files, replace_in_file
 import shutil   # 用于 backup_file
 import zipfile  # 用于 archive_files, extract_archive
 import tarfile  # 用于 archive_files, extract_archive
-from typing import Optional
+from typing import Optional, Dict, Any
+import httpx
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -45,15 +46,41 @@ else:
 base_dir = Path(__file__).parent.resolve() / "test"
 os.makedirs(base_dir, exist_ok=True)
 
+
+
 # --- Pydantic 模型定义 ---
+class ProxyAuth(BaseModel):
+    """代理认证信息"""
+    username: str
+    password: str
+
+class ProxyConfig(BaseModel):
+    """代理配置模型"""
+    enabled: bool = False
+    type: str = "http"  # http, https, socks5
+    host: str = ""
+    port: int = 8080
+    auth: Optional[ProxyAuth] = None
+
 class ChatRequest(BaseModel):
     """聊天请求模型"""
     message: str
+    proxyConfig: Optional[ProxyConfig] = None
 
     class Config:
         json_schema_extra = {
             "example": {
-                "message": "你好，请帮我创建一个文件"
+                "message": "你好，请帮我创建一个文件",
+                "proxyConfig": {
+                    "enabled": True,
+                    "type": "http",
+                    "host": "127.0.0.1",
+                    "port": 8080,
+                    "auth": {
+                        "username": "user",
+                        "password": "pass"
+                    }
+                }
             }
         }
 
@@ -78,6 +105,103 @@ class ErrorResponse(BaseModel):
                 "error": "请求处理失败"
             }
         }
+
+# --- 代理配置函数 ---
+def create_http_client_with_proxy(proxy_config: Optional[ProxyConfig] = None) -> httpx.AsyncClient:
+    """创建带代理配置的HTTP客户端"""
+
+    # 基础配置
+    client_kwargs = {
+        'timeout': httpx.Timeout(30.0, connect=10.0),  # 30秒总超时，10秒连接超时
+        'limits': httpx.Limits(max_keepalive_connections=5, max_connections=10),  # 连接池限制
+        'follow_redirects': True,  # 跟随重定向
+    }
+
+    if proxy_config and proxy_config.enabled and proxy_config.host and proxy_config.port:
+        # 构建代理URL
+        if proxy_config.auth:
+            # URL编码用户名和密码以处理特殊字符
+            import urllib.parse
+            username = urllib.parse.quote(proxy_config.auth.username)
+            password = urllib.parse.quote(proxy_config.auth.password)
+            proxy_url = f"{proxy_config.type}://{username}:{password}@{proxy_config.host}:{proxy_config.port}"
+        else:
+            proxy_url = f"{proxy_config.type}://{proxy_config.host}:{proxy_config.port}"
+
+        print(f"使用代理: {proxy_config.type}://{proxy_config.host}:{proxy_config.port}")
+
+        # 添加代理配置
+        client_kwargs['proxy'] = proxy_url
+
+    return httpx.AsyncClient(**client_kwargs)
+
+def create_openai_model_with_proxy(proxy_config: Optional[ProxyConfig] = None):
+    """创建带代理配置的OpenAI模型"""
+    if not deepseek_api_key:
+        return None
+
+    try:
+        # 创建带代理的HTTP客户端
+        http_client = create_http_client_with_proxy(proxy_config)
+
+        # 创建OpenAI Provider with custom http client
+        provider = OpenAIProvider(
+            base_url='https://api.deepseek.com',
+            api_key=deepseek_api_key,
+            http_client=http_client
+        )
+
+        return OpenAIModel('deepseek-chat', provider=provider)
+    except Exception as e:
+        print(f"创建代理模型失败: {e}")
+        return None
+
+async def test_proxy_connection(proxy_config: ProxyConfig) -> tuple[bool, str]:
+    """测试代理连接"""
+    try:
+        client = create_http_client_with_proxy(proxy_config)
+
+        # 测试连接到一个简单的HTTP服务
+        test_url = "https://httpbin.org/ip"
+        response = await client.get(test_url, timeout=10.0)
+
+        if response.status_code == 200:
+            data = response.json()
+            return True, f"代理连接成功，IP: {data.get('origin', 'unknown')}"
+        else:
+            return False, f"代理连接失败，HTTP状态码: {response.status_code}"
+
+    except Exception as e:
+        return False, f"代理连接测试失败: {str(e)}"
+    finally:
+        try:
+            await client.aclose()
+        except:
+            pass
+
+def validate_proxy_config(proxy_config: Optional[ProxyConfig]) -> tuple[bool, str]:
+    """验证代理配置"""
+    if not proxy_config or not proxy_config.enabled:
+        return True, ""
+
+    # 验证必需字段
+    if not proxy_config.host or not proxy_config.host.strip():
+        return False, "代理地址不能为空"
+
+    if not proxy_config.port or proxy_config.port < 1 or proxy_config.port > 65535:
+        return False, "代理端口必须在1-65535之间"
+
+    if proxy_config.type not in ['http', 'https', 'socks5']:
+        return False, f"不支持的代理类型: {proxy_config.type}"
+
+    # 验证认证信息
+    if proxy_config.auth:
+        if not proxy_config.auth.username or not proxy_config.auth.username.strip():
+            return False, "代理用户名不能为空"
+        if not proxy_config.auth.password or not proxy_config.auth.password.strip():
+            return False, "代理密码不能为空"
+
+    return True, ""
 
 # --- FastAPI 应用实例 ---
 app = FastAPI(
@@ -496,11 +620,23 @@ async def chat(request: ChatRequest) -> ChatResponse:
     聊天API端点
 
     接收用户消息并返回AI助手的回复。支持文件操作和各种工具调用。
+    现在支持代理配置。
     """
     user_message = request.message
+    proxy_config = request.proxyConfig
 
     if not user_message.strip():
         raise HTTPException(status_code=400, detail="消息内容不能为空")
+
+    # 验证代理配置
+    if proxy_config:
+        is_valid, error_msg = validate_proxy_config(proxy_config)
+        if not is_valid:
+            raise HTTPException(status_code=400, detail=f"代理配置无效: {error_msg}")
+
+    # 记录代理配置信息
+    if proxy_config and proxy_config.enabled:
+        print(f"使用代理配置: {proxy_config.type}://{proxy_config.host}:{proxy_config.port}")
 
     # 每次请求都使用新的历史记录，或者根据需要加载和管理历史
     # 这里为了简化，每次请求都从空历史开始，或者可以从文件加载
@@ -510,9 +646,25 @@ async def chat(request: ChatRequest) -> ChatResponse:
     try:
         print(f"接收到用户消息: {user_message}")
 
-        if agent is None:
+        # 根据代理配置决定使用哪个agent
+        current_agent = agent
+        if proxy_config and proxy_config.enabled and deepseek_api_key:
+            # 创建带代理的模型和agent
+            proxy_model = create_openai_model_with_proxy(proxy_config)
+            if proxy_model:
+                current_agent = Agent(
+                    model=proxy_model,
+                    system_prompt=BASE_SYSTEM_PROMPT,
+                    tools=agent_tools
+                )
+                print("使用带代理的AI模型")
+
+        if current_agent is None:
             # 测试模式：返回简单的回复
-            llm_response = f"测试模式回复：你说了 '{user_message}'。请配置 DEEPSEEK_API_KEY 以启用完整功能。"
+            proxy_info = ""
+            if proxy_config and proxy_config.enabled:
+                proxy_info = f" (代理: {proxy_config.type}://{proxy_config.host}:{proxy_config.port})"
+            llm_response = f"测试模式回复：你说了 '{user_message}'。请配置 DEEPSEEK_API_KEY 以启用完整功能。{proxy_info}"
         else:
             # 正常模式：使用LLM Agent
             # 使用线程池来运行同步代码，避免事件循环冲突
@@ -520,7 +672,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
             import concurrent.futures
 
             def run_agent_sync():
-                return agent.run_sync(user_message, message_history=agent_message_history)
+                return current_agent.run_sync(user_message, message_history=agent_message_history)
 
             # 在线程池中运行同步代码
             loop = asyncio.get_event_loop()
@@ -544,6 +696,33 @@ async def chat(request: ChatRequest) -> ChatResponse:
         traceback.print_exc()
 
         raise HTTPException(status_code=500, detail=f"LLM Agent处理请求失败: {e}")
+
+@app.post("/test-proxy", responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}})
+async def test_proxy_endpoint(proxy_config: ProxyConfig):
+    """
+    测试代理连接端点
+
+    测试指定的代理配置是否可用。
+    """
+    try:
+        # 验证代理配置
+        is_valid, error_msg = validate_proxy_config(proxy_config)
+        if not is_valid:
+            raise HTTPException(status_code=400, detail=f"代理配置无效: {error_msg}")
+
+        # 测试代理连接
+        success, message = await test_proxy_connection(proxy_config)
+
+        return {
+            "success": success,
+            "message": message,
+            "proxy_info": f"{proxy_config.type}://{proxy_config.host}:{proxy_config.port}"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"代理测试失败: {str(e)}")
 
 def main():
     # --- History File Paths ---

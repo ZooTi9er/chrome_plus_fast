@@ -10,6 +10,20 @@ document.addEventListener('DOMContentLoaded', () => {
     const resetSettingsButton = document.getElementById('reset-settings');
     const testConnectionButton = document.getElementById('test-connection');
 
+    // 新增的代理设置相关元素
+    const tabButtons = document.querySelectorAll('.tab-button');
+    const tabContents = document.querySelectorAll('.tab-content');
+    const proxyEnabledCheckbox = document.getElementById('proxy-enabled');
+    const proxyConfigSection = document.getElementById('proxy-config');
+    const proxyAuthEnabledCheckbox = document.getElementById('proxy-auth-enabled');
+    const proxyAuthSection = document.getElementById('proxy-auth');
+    const testProxyButton = document.getElementById('test-proxy');
+    const proxyStatusIndicator = document.getElementById('proxy-status');
+    const exportSettingsButton = document.getElementById('export-settings');
+    const importSettingsButton = document.getElementById('import-settings');
+    const importFileInput = document.getElementById('import-file');
+    const proxyPresets = document.getElementById('proxy-presets');
+
     // 初始化highlight.js
     if (typeof hljs !== 'undefined') {
         hljs.highlightAll();
@@ -41,6 +55,29 @@ document.addEventListener('DOMContentLoaded', () => {
     saveSettingsButton.addEventListener('click', saveSettings);
     resetSettingsButton.addEventListener('click', resetSettings);
     testConnectionButton.addEventListener('click', testConnection);
+
+    // 标签页切换事件
+    tabButtons.forEach(button => {
+        button.addEventListener('click', () => {
+            const targetTab = button.getAttribute('data-tab');
+            switchTab(targetTab);
+        });
+    });
+
+    // 代理设置事件监听器
+    proxyEnabledCheckbox.addEventListener('change', toggleProxyConfig);
+    proxyAuthEnabledCheckbox.addEventListener('change', toggleProxyAuth);
+    testProxyButton.addEventListener('click', testProxyConnection);
+    exportSettingsButton.addEventListener('click', exportSettings);
+    importSettingsButton.addEventListener('click', () => importFileInput.click());
+    importFileInput.addEventListener('change', importSettings);
+    proxyPresets.addEventListener('change', function() {
+        applyProxyPreset(this.value);
+    });
+
+    // 初始化代理配置状态
+    toggleProxyConfig();
+    toggleProxyAuth();
 
     function appendMessage(sender, message) {
         const messageWrapper = document.createElement('div');
@@ -121,12 +158,107 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    // 代理预设应用功能
+    function applyProxyPreset(presetValue) {
+        const presets = {
+            'local-http': {
+                type: 'http',
+                host: '127.0.0.1',
+                port: '8080',
+                auth: false
+            },
+            'local-socks5': {
+                type: 'socks5',
+                host: '127.0.0.1',
+                port: '1080',
+                auth: false
+            },
+            'squid-default': {
+                type: 'http',
+                host: '127.0.0.1',
+                port: '3128',
+                auth: false
+            }
+        };
+
+        if (presetValue && presets[presetValue]) {
+            const preset = presets[presetValue];
+
+            // 应用预设配置
+            document.getElementById('proxy-type').value = preset.type;
+            document.getElementById('proxy-host').value = preset.host;
+            document.getElementById('proxy-port').value = preset.port;
+            document.getElementById('proxy-auth-enabled').checked = preset.auth;
+
+            // 如果不需要认证，清空认证信息
+            if (!preset.auth) {
+                document.getElementById('proxy-username').value = '';
+                document.getElementById('proxy-password').value = '';
+            }
+
+            // 更新代理认证区域显示状态
+            toggleProxyAuth();
+
+            // 重置状态指示器
+            proxyStatusIndicator.textContent = '';
+            proxyStatusIndicator.className = 'status-indicator';
+        }
+    }
+
+    // 标签页切换函数
+    function switchTab(targetTab) {
+        // 移除所有活动状态
+        tabButtons.forEach(btn => btn.classList.remove('active'));
+        tabContents.forEach(content => content.classList.remove('active'));
+
+        // 激活目标标签页
+        document.querySelector(`[data-tab="${targetTab}"]`).classList.add('active');
+        document.getElementById(`${targetTab}-tab`).classList.add('active');
+    }
+
+    // 代理配置切换函数
+    function toggleProxyConfig() {
+        const isEnabled = proxyEnabledCheckbox.checked;
+        if (isEnabled) {
+            proxyConfigSection.classList.remove('disabled');
+        } else {
+            proxyConfigSection.classList.add('disabled');
+        }
+    }
+
+    function toggleProxyAuth() {
+        const isEnabled = proxyAuthEnabledCheckbox.checked;
+        if (isEnabled) {
+            proxyAuthSection.classList.remove('disabled');
+        } else {
+            proxyAuthSection.classList.add('disabled');
+        }
+    }
+
     // 设置管理函数
     function loadSettings() {
-        chrome.storage.sync.get(['apiEndpoint', 'apiKey', 'modelName'], function(result) {
+        chrome.storage.sync.get([
+            'apiEndpoint', 'apiKey', 'modelName',
+            'proxyEnabled', 'proxyType', 'proxyHost', 'proxyPort',
+            'proxyAuthEnabled', 'proxyUsername', 'proxyPassword'
+        ], function(result) {
+            // API设置
             document.getElementById('api-endpoint').value = result.apiEndpoint || '';
             document.getElementById('api-key').value = result.apiKey || '';
             document.getElementById('model-name').value = result.modelName || '';
+
+            // 代理设置
+            document.getElementById('proxy-enabled').checked = result.proxyEnabled || false;
+            document.getElementById('proxy-type').value = result.proxyType || 'http';
+            document.getElementById('proxy-host').value = result.proxyHost || '';
+            document.getElementById('proxy-port').value = result.proxyPort || '';
+            document.getElementById('proxy-auth-enabled').checked = result.proxyAuthEnabled || false;
+            document.getElementById('proxy-username').value = result.proxyUsername || '';
+            document.getElementById('proxy-password').value = result.proxyPassword || '';
+
+            // 更新UI状态
+            toggleProxyConfig();
+            toggleProxyAuth();
         });
     }
 
@@ -135,10 +267,38 @@ document.addEventListener('DOMContentLoaded', () => {
         const apiKey = document.getElementById('api-key').value.trim();
         const modelName = document.getElementById('model-name').value.trim();
 
+        // 代理设置
+        const proxyEnabled = document.getElementById('proxy-enabled').checked;
+        const proxyType = document.getElementById('proxy-type').value;
+        const proxyHost = document.getElementById('proxy-host').value.trim();
+        const proxyPort = document.getElementById('proxy-port').value.trim();
+        const proxyAuthEnabled = document.getElementById('proxy-auth-enabled').checked;
+        const proxyUsername = document.getElementById('proxy-username').value.trim();
+        const proxyPassword = document.getElementById('proxy-password').value.trim();
+
+        // 验证代理设置
+        if (proxyEnabled) {
+            if (!proxyHost || !proxyPort) {
+                alert('启用代理时，代理地址和端口不能为空！');
+                return;
+            }
+            if (proxyAuthEnabled && (!proxyUsername || !proxyPassword)) {
+                alert('启用代理身份验证时，用户名和密码不能为空！');
+                return;
+            }
+        }
+
         chrome.storage.sync.set({
             apiEndpoint: apiEndpoint,
             apiKey: apiKey,
-            modelName: modelName
+            modelName: modelName,
+            proxyEnabled: proxyEnabled,
+            proxyType: proxyType,
+            proxyHost: proxyHost,
+            proxyPort: proxyPort,
+            proxyAuthEnabled: proxyAuthEnabled,
+            proxyUsername: proxyUsername,
+            proxyPassword: proxyPassword
         }, function() {
             alert('设置已保存！');
             settingsModal.style.display = 'none';
@@ -148,9 +308,24 @@ document.addEventListener('DOMContentLoaded', () => {
     function resetSettings() {
         if (confirm('确定要重置为默认设置吗？')) {
             chrome.storage.sync.clear(function() {
+                // 重置API设置
                 document.getElementById('api-endpoint').value = '';
                 document.getElementById('api-key').value = '';
                 document.getElementById('model-name').value = '';
+
+                // 重置代理设置
+                document.getElementById('proxy-enabled').checked = false;
+                document.getElementById('proxy-type').value = 'http';
+                document.getElementById('proxy-host').value = '';
+                document.getElementById('proxy-port').value = '';
+                document.getElementById('proxy-auth-enabled').checked = false;
+                document.getElementById('proxy-username').value = '';
+                document.getElementById('proxy-password').value = '';
+
+                // 更新UI状态
+                toggleProxyConfig();
+                toggleProxyAuth();
+
                 alert('设置已重置！');
             });
         }
@@ -171,6 +346,20 @@ document.addEventListener('DOMContentLoaded', () => {
         testConnectionButton.disabled = true;
 
         try {
+            // 获取代理设置信息用于显示
+            const proxyEnabled = document.getElementById('proxy-enabled').checked;
+            let proxyInfo = '';
+
+            if (proxyEnabled) {
+                const proxyHost = document.getElementById('proxy-host').value.trim();
+                const proxyPort = document.getElementById('proxy-port').value.trim();
+                const proxyType = document.getElementById('proxy-type').value;
+
+                if (proxyHost && proxyPort) {
+                    proxyInfo = `\n代理: ${proxyType.toUpperCase()}://${proxyHost}:${proxyPort}`;
+                }
+            }
+
             // 构建完整的API端点
             let endpoint = apiEndpoint;
             if (!endpoint.endsWith('/chat/completions') && !endpoint.endsWith('/v1/chat/completions')) {
@@ -202,9 +391,9 @@ document.addEventListener('DOMContentLoaded', () => {
             if (response.ok) {
                 const data = await response.json();
                 if (data.choices && data.choices[0]) {
-                    alert('✅ 连接测试成功！API配置正确。');
+                    alert(`✅ 连接测试成功！API配置正确。${proxyInfo}`);
                 } else {
-                    alert('⚠️ 连接成功，但响应格式异常。请检查API兼容性。');
+                    alert(`⚠️ 连接成功，但响应格式异常。请检查API兼容性。${proxyInfo}`);
                 }
             } else {
                 const errorData = await response.json().catch(() => ({}));
@@ -212,14 +401,146 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (errorData.error) {
                     errorMsg += `\n错误信息: ${errorData.error.message || errorData.error}`;
                 }
+                errorMsg += proxyInfo;
                 alert(errorMsg);
             }
         } catch (error) {
-            alert(`❌ 连接测试失败: ${error.message}`);
+            alert(`❌ 连接测试失败: ${error.message}${proxyInfo}`);
         } finally {
             testConnectionButton.textContent = originalText;
             testConnectionButton.disabled = false;
         }
+    }
+
+    // 代理连接测试
+    async function testProxyConnection() {
+        const proxyEnabled = document.getElementById('proxy-enabled').checked;
+        const proxyHost = document.getElementById('proxy-host').value.trim();
+        const proxyPort = document.getElementById('proxy-port').value.trim();
+        const proxyType = document.getElementById('proxy-type').value;
+        const proxyAuthEnabled = document.getElementById('proxy-auth-enabled').checked;
+        const proxyUsername = document.getElementById('proxy-username').value.trim();
+        const proxyPassword = document.getElementById('proxy-password').value.trim();
+
+        if (!proxyEnabled) {
+            alert('请先启用代理！');
+            return;
+        }
+
+        if (!proxyHost || !proxyPort) {
+            alert('请先填写代理地址和端口！');
+            return;
+        }
+
+        if (proxyAuthEnabled && (!proxyUsername || !proxyPassword)) {
+            alert('启用认证时，用户名和密码不能为空！');
+            return;
+        }
+
+        const originalText = testProxyButton.textContent;
+        testProxyButton.textContent = '测试中...';
+        testProxyButton.disabled = true;
+        proxyStatusIndicator.textContent = '测试中...';
+        proxyStatusIndicator.className = 'status-indicator testing';
+
+        try {
+            // 构建代理配置
+            const proxyConfig = {
+                enabled: true,
+                type: proxyType,
+                host: proxyHost,
+                port: parseInt(proxyPort),
+                auth: proxyAuthEnabled ? {
+                    username: proxyUsername,
+                    password: proxyPassword
+                } : null
+            };
+
+            // 调用后端代理测试API
+            const response = await fetch('http://127.0.0.1:5001/test-proxy', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(proxyConfig)
+            });
+
+            const result = await response.json();
+
+            if (response.ok && result.success) {
+                proxyStatusIndicator.textContent = '连接成功';
+                proxyStatusIndicator.className = 'status-indicator success';
+                alert(`✅ 代理连接测试成功！\n${result.message}\n代理信息: ${result.proxy_info}`);
+            } else {
+                proxyStatusIndicator.textContent = '连接失败';
+                proxyStatusIndicator.className = 'status-indicator error';
+                const errorMsg = result.message || result.detail || '未知错误';
+                alert(`❌ 代理连接测试失败:\n${errorMsg}`);
+            }
+        } catch (error) {
+            proxyStatusIndicator.textContent = '测试失败';
+            proxyStatusIndicator.className = 'status-indicator error';
+            alert(`❌ 代理测试失败: ${error.message}\n请检查代理配置和网络连接。`);
+        } finally {
+            testProxyButton.textContent = originalText;
+            testProxyButton.disabled = false;
+        }
+    }
+
+    // 导出设置
+    function exportSettings() {
+        chrome.storage.sync.get(null, function(settings) {
+            const exportData = {
+                version: '1.0',
+                timestamp: new Date().toISOString(),
+                settings: settings
+            };
+
+            const blob = new Blob([JSON.stringify(exportData, null, 2)], {
+                type: 'application/json'
+            });
+
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `ai-assistant-settings-${new Date().toISOString().split('T')[0]}.json`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+
+            alert('设置已导出！');
+        });
+    }
+
+    // 导入设置
+    function importSettings(event) {
+        const file = event.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = function(e) {
+            try {
+                const importData = JSON.parse(e.target.result);
+
+                if (!importData.settings) {
+                    throw new Error('无效的配置文件格式');
+                }
+
+                if (confirm('确定要导入这些设置吗？这将覆盖当前的所有设置。')) {
+                    chrome.storage.sync.set(importData.settings, function() {
+                        loadSettings();
+                        alert('设置已导入！');
+                    });
+                }
+            } catch (error) {
+                alert(`导入失败: ${error.message}`);
+            }
+        };
+
+        reader.readAsText(file);
+        // 清空文件输入，允许重复导入同一文件
+        event.target.value = '';
     }
 
     async function sendMessage() {

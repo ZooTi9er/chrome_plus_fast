@@ -31,34 +31,122 @@
   <div id="settings-modal" class="modal">
     <div class="modal-content">
       <div class="modal-header">
-        <h2>模型设置</h2>
+        <h2>AI助手设置</h2>
         <span class="close">&times;</span>
       </div>
       <div class="modal-body">
-        <div class="form-group">
-          <label for="api-endpoint">API端点:</label>
-          <input type="text" id="api-endpoint" placeholder="https://api.openai.com 或 https://your-api.com">
-          <small class="help-text">
-            输入基础URL即可，系统会自动添加 /v1/chat/completions 路径<br>
-            例如：https://api.openai.com 或 https://gemini.ewuzhe.dpdns.org
-          </small>
+        <!-- 设置标签页 -->
+        <div class="settings-tabs">
+          <button class="tab-button active" data-tab="api">API配置</button>
+          <button class="tab-button" data-tab="proxy">代理设置</button>
         </div>
-        <div class="form-group">
-          <label for="api-key">API密钥:</label>
-          <input type="password" id="api-key" placeholder="sk-...">
-          <small class="help-text">请输入有效的API密钥</small>
+
+        <!-- API配置标签页 -->
+        <div id="api-tab" class="tab-content active">
+          <div class="form-group">
+            <label for="api-endpoint">API端点:</label>
+            <input type="text" id="api-endpoint" placeholder="https://api.openai.com 或 https://your-api.com">
+            <small class="help-text">
+              输入基础URL即可，系统会自动添加 /v1/chat/completions 路径<br>
+              例如：https://api.openai.com 或 https://gemini.ewuzhe.dpdns.org
+            </small>
+          </div>
+          <div class="form-group">
+            <label for="api-key">API密钥:</label>
+            <input type="password" id="api-key" placeholder="sk-...">
+            <small class="help-text">请输入有效的API密钥</small>
+          </div>
+          <div class="form-group">
+            <label for="model-name">模型名称:</label>
+            <input type="text" id="model-name" placeholder="gpt-3.5-turbo">
+            <small class="help-text">
+              常用模型：gpt-3.5-turbo, gpt-4, gemini-pro, claude-3-sonnet 等
+            </small>
+          </div>
+          <div class="form-group">
+            <button id="test-connection">测试连接</button>
+          </div>
         </div>
-        <div class="form-group">
-          <label for="model-name">模型名称:</label>
-          <input type="text" id="model-name" placeholder="gpt-3.5-turbo">
-          <small class="help-text">
-            常用模型：gpt-3.5-turbo, gpt-4, gemini-pro, claude-3-sonnet 等
-          </small>
+
+        <!-- 代理设置标签页 -->
+        <div id="proxy-tab" class="tab-content">
+          <div class="form-group">
+            <label class="checkbox-label">
+              <input type="checkbox" id="proxy-enabled">
+              <span class="checkmark"></span>
+              启用代理
+            </label>
+            <small class="help-text">启用后将通过代理服务器访问API</small>
+          </div>
+
+          <div id="proxy-config" class="proxy-config-section">
+            <div class="form-group">
+              <label for="proxy-type">代理类型:</label>
+              <select id="proxy-type">
+                <option value="http">HTTP代理</option>
+                <option value="https">HTTPS代理</option>
+                <option value="socks5">SOCKS5代理</option>
+              </select>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group flex-2">
+                <label for="proxy-host">代理地址:</label>
+                <input type="text" id="proxy-host" placeholder="127.0.0.1 或 proxy.example.com">
+              </div>
+              <div class="form-group flex-1">
+                <label for="proxy-port">端口:</label>
+                <input type="number" id="proxy-port" placeholder="8080" min="1" max="65535">
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label class="checkbox-label">
+                <input type="checkbox" id="proxy-auth-enabled">
+                <span class="checkmark"></span>
+                需要身份验证
+              </label>
+            </div>
+
+            <div id="proxy-auth" class="proxy-auth-section">
+              <div class="form-row">
+                <div class="form-group flex-1">
+                  <label for="proxy-username">用户名:</label>
+                  <input type="text" id="proxy-username" placeholder="用户名">
+                </div>
+                <div class="form-group flex-1">
+                  <label for="proxy-password">密码:</label>
+                  <input type="password" id="proxy-password" placeholder="密码">
+                </div>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label for="proxy-presets">常用代理预设:</label>
+              <select id="proxy-presets">
+                <option value="">选择预设配置...</option>
+                <option value="local-http">本地HTTP代理 (127.0.0.1:8080)</option>
+                <option value="local-socks5">本地SOCKS5代理 (127.0.0.1:1080)</option>
+                <option value="squid-default">Squid默认配置 (127.0.0.1:3128)</option>
+                <option value="custom">自定义配置</option>
+              </select>
+              <small class="help-text">选择预设配置快速填写代理信息</small>
+            </div>
+
+            <div class="form-group">
+              <button id="test-proxy">测试代理连接</button>
+              <span id="proxy-status" class="status-indicator"></span>
+            </div>
+          </div>
         </div>
-        <div class="form-group">
-          <button id="test-connection">测试连接</button>
-          <button id="save-settings">保存设置</button>
-          <button id="reset-settings">重置为默认</button>
+
+        <!-- 操作按钮 -->
+        <div class="form-actions">
+          <button id="save-settings" class="btn-primary">保存设置</button>
+          <button id="reset-settings" class="btn-secondary">重置为默认</button>
+          <button id="export-settings" class="btn-secondary">导出配置</button>
+          <button id="import-settings" class="btn-secondary">导入配置</button>
+          <input type="file" id="import-file" accept=".json" style="display: none;">
         </div>
       </div>
     </div>

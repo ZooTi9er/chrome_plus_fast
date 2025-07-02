@@ -3,9 +3,13 @@ const API_BASE_URL = 'http://localhost:5001';
 
 async function sendMessageToBackend(message) {
     try {
-        // 检查是否有自定义配置
+        // 检查是否有自定义配置（包括代理设置）
         const settings = await new Promise((resolve) => {
-            chrome.storage.sync.get(['apiEndpoint', 'apiKey', 'modelName'], resolve);
+            chrome.storage.sync.get([
+                'apiEndpoint', 'apiKey', 'modelName',
+                'proxyEnabled', 'proxyType', 'proxyHost', 'proxyPort',
+                'proxyAuthEnabled', 'proxyUsername', 'proxyPassword'
+            ], resolve);
         });
 
         let url, headers, body;
@@ -44,7 +48,23 @@ async function sendMessageToBackend(message) {
             headers = {
                 'Content-Type': 'application/json; charset=utf-8'
             };
-            body = JSON.stringify({ message: message });
+
+            // 如果启用了代理，将代理信息传递给后端
+            const requestBody = { message: message };
+            if (settings.proxyEnabled && settings.proxyHost && settings.proxyPort) {
+                requestBody.proxyConfig = {
+                    enabled: true,
+                    type: settings.proxyType,
+                    host: settings.proxyHost,
+                    port: parseInt(settings.proxyPort),
+                    auth: settings.proxyAuthEnabled ? {
+                        username: settings.proxyUsername,
+                        password: settings.proxyPassword
+                    } : null
+                };
+            }
+
+            body = JSON.stringify(requestBody);
         }
 
         const response = await fetch(url, {
@@ -109,5 +129,78 @@ async function sendMessageToBackend(message) {
     } catch (error) {
         console.error('Error sending message to backend:', error);
         return `Error: ${error.message}`;
+    }
+}
+
+// 代理配置验证函数
+function validateProxyConfig(proxyConfig) {
+    if (!proxyConfig || !proxyConfig.enabled) {
+        return { valid: true };
+    }
+
+    const errors = [];
+
+    if (!proxyConfig.host || !proxyConfig.host.trim()) {
+        errors.push('代理地址不能为空');
+    }
+
+    if (!proxyConfig.port || proxyConfig.port < 1 || proxyConfig.port > 65535) {
+        errors.push('代理端口必须在1-65535之间');
+    }
+
+    if (!['http', 'https', 'socks5'].includes(proxyConfig.type)) {
+        errors.push('不支持的代理类型');
+    }
+
+    if (proxyConfig.auth) {
+        if (!proxyConfig.auth.username || !proxyConfig.auth.username.trim()) {
+            errors.push('代理用户名不能为空');
+        }
+        if (!proxyConfig.auth.password || !proxyConfig.auth.password.trim()) {
+            errors.push('代理密码不能为空');
+        }
+    }
+
+    return {
+        valid: errors.length === 0,
+        errors: errors
+    };
+}
+
+// 获取代理配置的显示信息
+function getProxyDisplayInfo(settings) {
+    if (!settings.proxyEnabled) {
+        return '未启用代理';
+    }
+
+    const authInfo = settings.proxyAuthEnabled ? ' (需要认证)' : '';
+    return `${settings.proxyType.toUpperCase()}代理: ${settings.proxyHost}:${settings.proxyPort}${authInfo}`;
+}
+
+// 测试API连接（包括代理）
+async function testAPIConnection(settings) {
+    try {
+        const testMessage = '测试连接';
+        const response = await sendMessageToBackend(testMessage);
+
+        if (response && !response.startsWith('Error:')) {
+            return {
+                success: true,
+                message: '连接测试成功',
+                proxyInfo: getProxyDisplayInfo(settings)
+            };
+        } else {
+            return {
+                success: false,
+                message: response || '连接测试失败',
+                proxyInfo: getProxyDisplayInfo(settings)
+            };
+        }
+    } catch (error) {
+        return {
+            success: false,
+            message: `连接测试失败: ${error.message}`,
+            proxyInfo: getProxyDisplayInfo(settings)
+        };
     }
 }
