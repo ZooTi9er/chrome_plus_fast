@@ -1,46 +1,222 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""
+Chrome Plus V2.0 - 后端服务
+支持WebSocket实时通信、Celery异步任务处理和Redis消息队列
+"""
 
 from pathlib import Path
 import os
-from dotenv import load_dotenv
-import datetime
+import uuid
+import asyncio
 import json
-import difflib
-import re       # 用于 find_files, replace_in_file
-import shutil   # 用于 backup_file
-import zipfile  # 用于 archive_files, extract_archive
-import tarfile  # 用于 archive_files, extract_archive
-from typing import Optional, Dict, Any
-import httpx
+import logging
+from typing import Optional, Dict, Any, List
+from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+# 环境和配置
+from dotenv import load_dotenv
+
+# FastAPI和WebSocket
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from pydantic_ai import Agent
-from pydantic_ai.models.openai import OpenAIModel
-from pydantic_ai.providers.openai import OpenAIProvider
-# from pydantic_ai.common_tools.tavily import tavily_search_tool
-from pydantic_ai.messages import ModelMessage
+# Redis（简化版本不使用Celery）
+import redis.asyncio as redis
+# from celery.result import AsyncResult
 
-# 加载 .env 中的 API Key
+# 导入任务模块（简化版本不使用Celery）
+# from tasks import celery_app, process_ai_message
+
+# 原有的文件操作模块
+import datetime
+import difflib
+import re
+import shutil
+import zipfile
+import tarfile
+import httpx
+
+# AI模块 (可选，用于兼容性)
+try:
+    from pydantic_ai import Agent
+    from pydantic_ai.models.openai import OpenAIModel
+    from pydantic_ai.providers.openai import OpenAIProvider
+    from pydantic_ai.messages import ModelMessage
+    PYDANTIC_AI_AVAILABLE = True
+except ImportError:
+    logger.warning("pydantic-ai不可用，将使用简化模式")
+    PYDANTIC_AI_AVAILABLE = False
+    Agent = None
+    OpenAIModel = None
+    OpenAIProvider = None
+    ModelMessage = None
+
+# 加载环境变量
 load_dotenv()
 
-# --- 模型配置 ---
+# 配置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# --- 环境配置 ---
+REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
+ENVIRONMENT = os.getenv('ENVIRONMENT', 'development')
+DEBUG = os.getenv('DEBUG', 'false').lower() == 'true'
+
+# AI API配置
 deepseek_api_key = os.getenv('DEEPSEEK_API_KEY')
 if not deepseek_api_key:
-    print("警告：未找到 DEEPSEEK_API_KEY，使用测试模式")
-    # 在没有API密钥时，我们创建一个简单的模拟响应
-    model = None
-else:
-    model = OpenAIModel(
-        'deepseek-chat',
-        provider=OpenAIProvider(
-            base_url='https://api.deepseek.com',
-            api_key=deepseek_api_key
-        ),
-    )
+    logger.warning("未找到 DEEPSEEK_API_KEY，使用测试模式")
+
+# Redis连接池
+redis_pool = None
+
+# WebSocket连接管理器
+class ConnectionManager:
+    """WebSocket连接管理器"""
+
+    def __init__(self):
+        self.active_connections: Dict[str, WebSocket] = {}
+        self.user_channels: Dict[str, str] = {}  # user_id -> channel_id
+
+    async def connect(self, websocket: WebSocket, user_id: Optional[str] = None) -> str:
+        """接受WebSocket连接并返回频道ID"""
+        await websocket.accept()
+        channel_id = str(uuid.uuid4())
+        self.active_connections[channel_id] = websocket
+
+        if user_id:
+            self.user_channels[user_id] = channel_id
+
+        logger.info(f"WebSocket连接建立: {channel_id}")
+        return channel_id
+
+    def disconnect(self, channel_id: str):
+        """断开WebSocket连接"""
+        if channel_id in self.active_connections:
+            del self.active_connections[channel_id]
+
+        # 清理用户频道映射
+        for user_id, ch_id in list(self.user_channels.items()):
+            if ch_id == channel_id:
+                del self.user_channels[user_id]
+                break
+
+        logger.info(f"WebSocket连接断开: {channel_id}")
+
+    async def send_personal_message(self, message: dict, channel_id: str):
+        """发送消息到特定频道"""
+        if channel_id in self.active_connections:
+            websocket = self.active_connections[channel_id]
+            try:
+                await websocket.send_json(message)
+            except Exception as e:
+                logger.error(f"发送消息失败 {channel_id}: {e}")
+                self.disconnect(channel_id)
+
+    async def broadcast(self, message: dict):
+        """广播消息到所有连接"""
+        disconnected = []
+        for channel_id, websocket in self.active_connections.items():
+            try:
+                await websocket.send_json(message)
+            except Exception as e:
+                logger.error(f"广播消息失败 {channel_id}: {e}")
+                disconnected.append(channel_id)
+
+        # 清理断开的连接
+        for channel_id in disconnected:
+            self.disconnect(channel_id)
+
+# 全局连接管理器实例
+manager = ConnectionManager()
+
+# Redis发布/订阅监听器
+async def redis_listener():
+    """监听Redis发布/订阅消息并转发到WebSocket"""
+    global redis_pool
+    if not redis_pool:
+        return
+
+    pubsub = redis_pool.pubsub()
+
+    try:
+        # 订阅所有结果频道
+        await pubsub.psubscribe("result:*")
+        logger.info("Redis监听器启动，订阅result:*频道")
+
+        async for message in pubsub.listen():
+            if message['type'] == 'pmessage':
+                try:
+                    # 解析频道名获取channel_id
+                    channel_pattern = message['pattern'].decode('utf-8')
+                    channel_name = message['channel'].decode('utf-8')
+                    channel_id = channel_name.replace('result:', '')
+
+                    # 解析消息数据
+                    data = json.loads(message['data'].decode('utf-8'))
+
+                    # 转发到对应的WebSocket连接
+                    await manager.send_personal_message(data, channel_id)
+                    logger.info(f"转发消息到频道 {channel_id}")
+
+                except Exception as e:
+                    logger.error(f"处理Redis消息失败: {e}")
+
+    except Exception as e:
+        logger.error(f"Redis监听器错误: {e}")
+    finally:
+        await pubsub.unsubscribe()
+        await pubsub.close()
+
+# 应用生命周期管理
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用生命周期管理"""
+    global redis_pool
+
+    # 启动时初始化
+    logger.info("Chrome Plus V2.0 后端服务启动中...")
+
+    try:
+        # 初始化Redis连接池
+        redis_pool = redis.ConnectionPool.from_url(REDIS_URL)
+        redis_client = redis.Redis(connection_pool=redis_pool)
+
+        # 测试Redis连接
+        await redis_client.ping()
+        logger.info("Redis连接成功")
+
+        # 启动Redis监听器
+        redis_task = asyncio.create_task(redis_listener())
+
+        logger.info("后端服务启动完成")
+
+        yield
+
+    except Exception as e:
+        logger.error(f"服务启动失败: {e}")
+        raise
+    finally:
+        # 关闭时清理
+        logger.info("正在关闭服务...")
+
+        if 'redis_task' in locals():
+            redis_task.cancel()
+            try:
+                await redis_task
+            except asyncio.CancelledError:
+                pass
+
+        if redis_pool:
+            await redis_pool.disconnect()
+
+        logger.info("服务已关闭")
 
 # 全局基础目录
 base_dir = Path(__file__).parent.resolve() / "test"
@@ -137,7 +313,7 @@ def create_http_client_with_proxy(proxy_config: Optional[ProxyConfig] = None) ->
 
 def create_openai_model_with_proxy(proxy_config: Optional[ProxyConfig] = None):
     """创建带代理配置的OpenAI模型"""
-    if not deepseek_api_key:
+    if not deepseek_api_key or not PYDANTIC_AI_AVAILABLE:
         return None
 
     try:
@@ -153,7 +329,7 @@ def create_openai_model_with_proxy(proxy_config: Optional[ProxyConfig] = None):
 
         return OpenAIModel('deepseek-chat', provider=provider)
     except Exception as e:
-        print(f"创建代理模型失败: {e}")
+        logger.error(f"创建代理模型失败: {e}")
         return None
 
 async def test_proxy_connection(proxy_config: ProxyConfig) -> tuple[bool, str]:
@@ -203,11 +379,27 @@ def validate_proxy_config(proxy_config: Optional[ProxyConfig]) -> tuple[bool, st
 
     return True, ""
 
+# --- 数据模型 ---
+class WebSocketMessage(BaseModel):
+    """WebSocket消息模型"""
+    type: str  # 'chat', 'status', 'error', 'result'
+    data: Dict[str, Any]
+    timestamp: Optional[str] = None
+    channel_id: Optional[str] = None
+
+class ChatWebSocketRequest(BaseModel):
+    """WebSocket聊天请求模型"""
+    message: str
+    user_id: Optional[str] = None
+    proxy_config: Optional[ProxyConfig] = None
+    api_config: Optional[Dict[str, Any]] = None
+
 # --- FastAPI 应用实例 ---
 app = FastAPI(
-    title="ShellAI API",
-    description="AI助手API，支持文件操作和聊天功能",
-    version="1.0.0"
+    title="Chrome Plus V2.0 API",
+    description="AI助手API，支持WebSocket实时通信、异步任务处理和文件操作",
+    version="2.0.0",
+    lifespan=lifespan
 )
 
 # 配置CORS
@@ -586,41 +778,188 @@ BASE_SYSTEM_PROMPT = f"""你是 ShellAI，一个经验丰富的程序员助手�
 - 操作完成后，向用户报告操作结果。如果操作失败，请解释原因。
 """
 
-# --- Tavily 工具实例化 (暂时禁用) ---
-# tavily_api_key = os.getenv("TAVILY_API_KEY")
-# if not tavily_api_key:
-#     print("警告：未在环境变量中找到 TAVILY_API_KEY。Tavily 搜索功能将不可用。")
-#     tavily_tool_instance = None
-# else:
-#     tavily_tool_instance = tavily_search_tool(api_key=tavily_api_key)
-tavily_tool_instance = None
-
-# --- Agent 初始化 ---
-agent_tools = [
-    read_file, list_files, rename_file, write_file, create_directory,
-    delete_file, pwd, diff_files, tree, find_files, replace_in_file, get_system_info,
-    archive_files, extract_archive, backup_file,
-]
-if tavily_tool_instance:
-    agent_tools.append(tavily_tool_instance)
-
-if model:
-    agent = Agent(
-        model=model,
-        system_prompt=BASE_SYSTEM_PROMPT,
-        tools=agent_tools
-    )
-else:
-    agent = None
+# --- 任务状态查询端点 ---
+# 任务状态查询端点（简化版本不使用Celery）
+# @app.get("/task/{task_id}")
+# async def get_task_status(task_id: str):
+#     """查询任务状态"""
+#     return {"message": "简化版本不支持任务状态查询"}
 
 # --- FastAPI 路由 ---
+
+@app.get("/health")
+async def health_check():
+    """健康检查端点"""
+    try:
+        # 检查Redis连接
+        if redis_pool:
+            redis_client = redis.Redis(connection_pool=redis_pool)
+            await redis_client.ping()
+            redis_status = "healthy"
+        else:
+            redis_status = "disconnected"
+
+        # 检查Celery Worker（简化版本不使用）
+        celery_status = "disabled"
+
+        return {
+            "status": "healthy",
+            "version": "2.0.0",
+            "redis": redis_status,
+            "celery": celery_status,
+            "websocket_connections": len(manager.active_connections)
+        }
+    except Exception as e:
+        logger.error(f"健康检查失败: {e}")
+        raise HTTPException(status_code=500, detail="Service unhealthy")
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """WebSocket端点，处理实时通信"""
+    channel_id = None
+    try:
+        # 建立连接
+        channel_id = await manager.connect(websocket)
+
+        # 发送连接确认
+        await manager.send_personal_message({
+            "type": "connection",
+            "data": {
+                "status": "connected",
+                "channel_id": channel_id,
+                "message": "WebSocket连接已建立"
+            },
+            "timestamp": datetime.datetime.now().isoformat()
+        }, channel_id)
+
+        # 监听消息
+        while True:
+            try:
+                # 接收消息
+                data = await websocket.receive_json()
+
+                # 验证消息格式
+                if not isinstance(data, dict) or 'type' not in data:
+                    await manager.send_personal_message({
+                        "type": "error",
+                        "data": {"message": "无效的消息格式"},
+                        "timestamp": datetime.datetime.now().isoformat()
+                    }, channel_id)
+                    continue
+
+                message_type = data.get('type')
+
+                if message_type == 'chat':
+                    # 处理聊天消息
+                    await handle_chat_message(data, channel_id)
+                elif message_type == 'ping':
+                    # 处理心跳
+                    await manager.send_personal_message({
+                        "type": "pong",
+                        "data": {"timestamp": datetime.datetime.now().isoformat()},
+                        "timestamp": datetime.datetime.now().isoformat()
+                    }, channel_id)
+                else:
+                    await manager.send_personal_message({
+                        "type": "error",
+                        "data": {"message": f"不支持的消息类型: {message_type}"},
+                        "timestamp": datetime.datetime.now().isoformat()
+                    }, channel_id)
+
+            except WebSocketDisconnect:
+                break
+            except Exception as e:
+                logger.error(f"WebSocket消息处理错误: {e}")
+                await manager.send_personal_message({
+                    "type": "error",
+                    "data": {"message": f"消息处理失败: {str(e)}"},
+                    "timestamp": datetime.datetime.now().isoformat()
+                }, channel_id)
+
+    except Exception as e:
+        logger.error(f"WebSocket连接错误: {e}")
+    finally:
+        if channel_id:
+            manager.disconnect(channel_id)
+
+async def handle_chat_message(data: dict, channel_id: str):
+    """处理聊天消息"""
+    try:
+        # 解析聊天请求
+        chat_data = data.get('data', {})
+        message = chat_data.get('message', '').strip()
+
+        if not message:
+            await manager.send_personal_message({
+                "type": "error",
+                "data": {"message": "消息内容不能为空"},
+                "timestamp": datetime.datetime.now().isoformat()
+            }, channel_id)
+            return
+
+        # 发送处理状态
+        await manager.send_personal_message({
+            "type": "status",
+            "data": {
+                "status": "processing",
+                "message": "正在处理您的请求..."
+            },
+            "timestamp": datetime.datetime.now().isoformat()
+        }, channel_id)
+
+        # 构建任务数据
+        task_data = {
+            "message": message,
+            "channel_id": channel_id,
+            "user_id": chat_data.get('user_id'),
+            "proxy_config": chat_data.get('proxy_config'),
+            "api_config": chat_data.get('api_config')
+        }
+
+        # 直接处理任务（简化版本，不使用Celery）
+        try:
+            from agent_tools import create_intelligent_agent, run_agent_with_tools
+
+            # 创建智能体
+            agent = create_intelligent_agent(task_data.get('proxy_config'))
+
+            # 处理消息
+            response = run_agent_with_tools(agent, message)
+
+            # 发送结果
+            await manager.send_personal_message({
+                "type": "result",
+                "data": {
+                    "response": response,
+                    "success": True
+                },
+                "timestamp": datetime.datetime.now().isoformat()
+            }, channel_id)
+
+            logger.info(f"消息处理完成，频道: {channel_id}")
+
+        except Exception as e:
+            logger.error(f"处理消息失败: {e}")
+            await manager.send_personal_message({
+                "type": "error",
+                "data": {"message": f"处理失败: {str(e)}"},
+                "timestamp": datetime.datetime.now().isoformat()
+            }, channel_id)
+
+    except Exception as e:
+        logger.error(f"处理聊天消息失败: {e}")
+        await manager.send_personal_message({
+            "type": "error",
+            "data": {"message": f"处理失败: {str(e)}"},
+            "timestamp": datetime.datetime.now().isoformat()
+        }, channel_id)
+
 @app.post("/chat", response_model=ChatResponse, responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}})
 async def chat(request: ChatRequest) -> ChatResponse:
     """
-    聊天API端点
+    聊天API端点 (兼容性接口)
 
-    接收用户消息并返回AI助手的回复。支持文件操作和各种工具调用。
-    现在支持代理配置。
+    为了向后兼容，保留HTTP接口。建议使用WebSocket接口获得更好的实时体验。
     """
     user_message = request.message
     proxy_config = request.proxyConfig
@@ -634,68 +973,44 @@ async def chat(request: ChatRequest) -> ChatResponse:
         if not is_valid:
             raise HTTPException(status_code=400, detail=f"代理配置无效: {error_msg}")
 
-    # 记录代理配置信息
-    if proxy_config and proxy_config.enabled:
-        print(f"使用代理配置: {proxy_config.type}://{proxy_config.host}:{proxy_config.port}")
-
-    # 每次请求都使用新的历史记录，或者根据需要加载和管理历史
-    # 这里为了简化，每次请求都从空历史开始，或者可以从文件加载
-    # 如果需要会话持久性，需要更复杂的历史管理逻辑
-    agent_message_history: list[ModelMessage] = []
-
     try:
-        print(f"接收到用户消息: {user_message}")
+        logger.info(f"HTTP聊天请求: {user_message}")
 
-        # 根据代理配置决定使用哪个agent
-        current_agent = agent
-        if proxy_config and proxy_config.enabled and deepseek_api_key:
-            # 创建带代理的模型和agent
-            proxy_model = create_openai_model_with_proxy(proxy_config)
-            if proxy_model:
-                current_agent = Agent(
-                    model=proxy_model,
-                    system_prompt=BASE_SYSTEM_PROMPT,
-                    tools=agent_tools
-                )
-                print("使用带代理的AI模型")
+        # 构建任务数据
+        task_data = {
+            "message": user_message,
+            "channel_id": f"http_{uuid.uuid4()}",  # 为HTTP请求生成临时频道ID
+            "proxy_config": proxy_config.model_dump() if proxy_config else None,
+            "api_config": None
+        }
 
-        if current_agent is None:
-            # 测试模式：返回简单的回复
+        # 直接处理任务（简化版本）
+        try:
+            from agent_tools import create_intelligent_agent, run_agent_with_tools
+
+            # 创建智能体
+            agent = create_intelligent_agent(task_data.get('proxy_config'))
+
+            # 处理消息
+            response = run_agent_with_tools(agent, user_message)
+
+            return ChatResponse(response=response)
+
+        except Exception as e:
+            logger.error(f"处理失败: {e}")
+            # 如果处理失败，返回简单的测试响应
             proxy_info = ""
             if proxy_config and proxy_config.enabled:
                 proxy_info = f" (代理: {proxy_config.type}://{proxy_config.host}:{proxy_config.port})"
-            llm_response = f"测试模式回复：你说了 '{user_message}'。请配置 DEEPSEEK_API_KEY 以启用完整功能。{proxy_info}"
-        else:
-            # 正常模式：使用LLM Agent
-            # 使用线程池来运行同步代码，避免事件循环冲突
-            import asyncio
-            import concurrent.futures
 
-            def run_agent_sync():
-                return current_agent.run_sync(user_message, message_history=agent_message_history)
+            fallback_response = f"Chrome Plus V2.0 智能体响应：收到消息 '{user_message}'。{proxy_info}\n\n" \
+                              f"注意：智能体处理失败，错误: {str(e)}"
 
-            # 在线程池中运行同步代码
-            loop = asyncio.get_event_loop()
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                resp = await loop.run_in_executor(executor, run_agent_sync)
-                llm_response = resp.output
-
-            # 确保LLM响应是UTF-8编码的字符串，避免乱码
-            if isinstance(llm_response, bytes):
-                llm_response = llm_response.decode('utf-8', errors='replace')
-            elif not isinstance(llm_response, str):
-                llm_response = str(llm_response)
-
-        print(f"LLM Agent响应: {llm_response}")
-
-        return ChatResponse(response=llm_response)
+            return ChatResponse(response=fallback_response)
 
     except Exception as e:
-        print(f"调用LLM Agent时发生错误: {e}")
-        import traceback
-        traceback.print_exc()
-
-        raise HTTPException(status_code=500, detail=f"LLM Agent处理请求失败: {e}")
+        logger.error(f"HTTP聊天处理失败: {e}")
+        raise HTTPException(status_code=500, detail=f"处理请求失败: {e}")
 
 @app.post("/test-proxy", responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}})
 async def test_proxy_endpoint(proxy_config: ProxyConfig):
@@ -725,197 +1040,38 @@ async def test_proxy_endpoint(proxy_config: ProxyConfig):
         raise HTTPException(status_code=500, detail=f"代理测试失败: {str(e)}")
 
 def main():
-    # --- History File Paths ---
-    history_dir = Path(__file__).parent.resolve()
-    # For human-readable detailed log as per user request
-    human_readable_history_md_file = history_dir / ".history.md"
-    # For structured detailed log of interactions as per user request
-    interaction_log_json_file = history_dir / ".history.json"
-    # For pydantic-ai agent's internal message history (sequence of ModelMessage)
-    agent_messages_json_file = history_dir / ".agent_messages.json"
+    """主函数 - 启动FastAPI服务"""
+    logger.info("Chrome Plus V2.0 后端服务启动中...")
 
-    # --- Initialize Human-Readable Markdown History File ---
-    if not human_readable_history_md_file.exists():
-        human_readable_history_md_file.write_text(f"# ShellAI Command History Log\n\n", encoding='utf-8')
+    # 确保基础目录存在
+    if not base_dir.exists():
+        logger.info(f"创建沙箱目录: {base_dir}")
+        try:
+            base_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            logger.error(f"无法创建基础目录 {base_dir}: {e}")
+            exit(1)
 
-    # --- Load Agent's Message History (list[ModelMessage]) ---
-    # agent_message_history: list[ModelMessage] = [] # 移动到chat函数内部或全局管理
-    # if agent_messages_json_file.exists() and agent_messages_json_file.stat().st_size > 0:
-    #     try:
-    #         history_data_from_json = json.loads(agent_messages_json_file.read_text(encoding='utf-8'))
-    #         if isinstance(history_data_from_json, list):
-    #             for item in history_data_from_json:
-    #                 if isinstance(item, dict) and "role" in item and "content" in item:
-    #                     try:
-    #                         item_content = item.get("content", "") # Default to empty string if content is missing
-    #                         if not isinstance(item_content, str):
-    #                             item_content = str(item_content) # Ensure content is string
-    #                         agent_message_history.append(ModelMessage(role=item["role"], content=item_content))
-    #                     except Exception as e:
-    #                         print(f"警告：从 {agent_messages_json_file} 加载历史时，转换字典到ModelMessage失败: {item}, 错误: {e}")
-    #                 else:
-    #                     print(f"警告：从 {agent_messages_json_file} 加载的历史项格式不正确: {item}")
-    #         else:
-    #             print(f"警告: 历史文件 {agent_messages_json_file} 内容不是一个列表。将使用空历史。")
-    #             agent_message_history = [] # Reset if format is incorrect
-    #     except json.JSONDecodeError:
-    #         print(f"警告: 历史文件 {agent_messages_json_file} 解析失败。将使用空历史。")
-    #         agent_message_history = []
-    #     except Exception as e:
-    #         print(f"加载历史文件 {agent_messages_json_file} 时发生未知错误: {e}。将使用空历史。")
-    #         agent_message_history = []
-    
-    # --- Load Interaction Log (list of interaction dicts for .history.json) ---
-    # logged_interactions: list[dict] = [] # 移动到chat函数内部或全局管理
-    # if interaction_log_json_file.exists() and interaction_log_json_file.stat().st_size > 0:
-    #     try:
-    #         loaded_data = json.loads(interaction_log_json_file.read_text(encoding='utf-8'))
-    #         if isinstance(loaded_data, list):
-    #             logged_interactions = loaded_data
-    #         else:
-    #             print(f"警告: 交互日志文件 {interaction_log_json_file} 内容不是一个列表。将重新初始化。")
-    #             logged_interactions = []
-    #     except json.JSONDecodeError:
-    #         print(f"警告: 交互日志文件 {interaction_log_json_file} 解析失败。将重新初始化。")
-    #         logged_interactions = []
-    #     except Exception as e:
-    #         print(f"加载交互日志文件 {interaction_log_json_file} 时发生未知错误: {e}。将重新初始化。")
-    #         logged_interactions = []
+    # 启动FastAPI服务
+    import uvicorn
 
-    print(
-        "欢迎使用 ShellAI！\n"
-        f"所有文件操作都将限定在沙箱目录 './{base_dir.name}/' 中进行。\n"
-        "输入 '/mode [chat|designer|coder]' 切换模式。\n"
-        "输入 'exit' 或 'quit' 退出程序。\n"
-    )
-    # current_mode = "chat" # 不再需要
-
-    # 移除命令行交互循环
-    # while True:
-    #     try:
-    #         raw_input_str = input(f"[{current_mode}]> ").strip()
-    #         if not raw_input_str:
-    #             continue
-    #         if raw_input_str.lower() in ("exit", "quit"):
-    #             print("正在退出 ShellAI。再见！")
-    #             break
-
-    #         if raw_input_str.startswith("/mode"):
-    #             parts = raw_input_str.split()
-    #             if len(parts) == 2 and parts[1] in ("chat", "designer", "coder"):
-    #                 current_mode = parts[1]
-    #                 print(f"已切换到 {current_mode} 模式。")
-    #             else:
-    #                 print("用法：/mode [chat|designer|coder]")
-    #             continue
-
-    #         user_prompt_with_mode = f"[当前模式:{current_mode}] {raw_input_str}"
-            
-    #         resp = agent.run_sync(user_prompt_with_mode, message_history=agent_message_history)
-    #         output_message_content = resp.output
-    #         print(output_message_content)
-
-    #         # --- Log to Human-Readable Markdown File ---
-    #         timestamp_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    #         md_log_entry = f"## Timestamp: {timestamp_str} (Mode: {current_mode})\n\n"
-    #         md_log_entry += "## Input\n```bash\n" # bash for syntax highlighting if it's command-like
-    #         md_log_entry += f"{raw_input_str}\n```\n\n"
-    #         md_log_entry += "## Output\n```\n" # Generic code block for LLM output
-    #         md_log_entry += f"{output_message_content}\n```\n\n"
-            
-    #         with open(human_readable_history_md_file, "a", encoding='utf-8') as f_md:
-    #             f_md.write(md_log_entry)
-
-    #         # --- Log to Structured JSON File ---
-    #         json_log_entry = {
-    #             "timestamp": timestamp_str,
-    #             "mode": current_mode,
-    #             "input": raw_input_str,
-    #             "input_to_llm": user_prompt_with_mode,
-    #             "output": output_message_content
-    #         }
-    #         logged_interactions.append(json_log_entry)
-    #         with open(interaction_log_json_file, "w", encoding='utf-8') as f_json_log:
-    #             json.dump(logged_interactions, f_json_log, ensure_ascii=False, indent=4)
-
-
-    #         # --- Update Agent's Message History for next turn & Prepare for JSON Save ---
-    #         agent_message_history_for_next_turn: list[ModelMessage] = []
-    #         agent_message_history_for_json_save: list[dict] = []
-            
-    #         messages_to_process = resp.all_messages()
-
-    #         if messages_to_process:
-    #             for msg_object in messages_to_process:
-    #                 role_to_use = None
-    #                 content_to_use = None
-
-    #                 if hasattr(msg_object, 'role') and isinstance(msg_object.role, str):
-    #                     if msg_object.role in ["user", "assistant", "tool", "system"]:
-    #                         role_to_use = msg_object.role
-    #                 if not role_to_use: continue # Skip if no valid role
-
-    #                 # Extract content, ensuring it's a string, with special handling for ToolCallParts
-    #                 if isinstance(msg_object, ModelMessage):
-    #                     if isinstance(msg_object.content, str):
-    #                         content_to_use = msg_object.content
-    #                     elif isinstance(msg_object.content, list): # Content is list of Parts
-    #                         temp_content_parts = []
-    #                         for part_item in msg_object.content: # part_item is a BasePart instance
-    #                             if hasattr(part_item, 'text') and isinstance(part_item.text, str):
-    #                                 temp_content_parts.append(part_item.text)
-    #                             elif hasattr(part_item, 'tool_calls') and isinstance(part_item.tool_calls, list) and part_item.tool_calls:
-    #                                 # This part_item is a ToolCallPart, its .tool_calls is a list of ToolCall objects
-    #                                 tc_strs = []
-    #                                 for tc in part_item.tool_calls: # tc is a ToolCall object
-    #                                     # tc.id, tc.name, tc.arguments (which is a JSON string of args)
-    #                                     tc_strs.append(f"ToolCall(id='{tc.id}', name='{tc.name}', arguments='{tc.arguments}')")
-    #                                 temp_content_parts.append("Tool Calls: " + "; ".join(tc_strs))
-    #                             elif isinstance(part_item, str): # Fallback if a raw string is in the parts list
-    #                                 temp_content_parts.append(part_item)
-    #                             # else: # Optional: log or handle other unrecognised part types
-    #                             #     temp_content_parts.append(f"[Unsupported Part: {type(part_item)}]")
-    #                         if temp_content_parts:
-    #                             content_to_use = "\n".join(temp_content_parts)
-    #                         else: # If list is empty or only unhandled parts
-    #                             content_to_use = "" # Default to empty string
-    #                     else: # Fallback for ModelMessage.content if not str or list
-    #                         content_to_use = str(msg_object.content) if msg_object.content is not None else ""
-                    
-    #                 elif hasattr(msg_object, 'content'): # E.g. SystemMessagePart, ToolMessage (where content is string output)
-    #                     if isinstance(msg_object.content, str):
-    #                         content_to_use = msg_object.content
-    #                     else:
-    #                         content_to_use = str(msg_object.content) if msg_object.content is not None else ""
-    #                 # Removed 'parts' and 'text' direct access here, as ModelMessage covers them.
-    #                 # ToolMessage's content is directly the tool's string output.
-                    
-    #                 if content_to_use is None: # Ensure content_to_use is always a string
-    #                     content_to_use = ""
-
-    #                 # This check was `if role_to_use and content_to_use is not None:`
-    #                 # Now content_to_use is initialized or set, so it won't be None.
-    #                 # We still need role_to_use.
-    #                 try:
-    #                     model_msg_for_agent = ModelMessage(role=role_to_use, content=content_to_use)
-    #                     agent_message_history_for_next_turn.append(model_msg_for_agent)
-    #                     agent_message_history_for_json_save.append({"role": role_to_use, "content": content_to_use})
-    #                 except Exception as e:
-    #                     print(f"警告：为Agent历史创建 ModelMessage (role: {role_to_use}) 失败: {e}")
-            
-    #         agent_message_history = agent_message_history_for_next_turn
-
-    #         with open(agent_messages_json_file, "w", encoding='utf-8') as f_agent_hist:
-    #             json.dump(agent_message_history_for_json_save, f_agent_hist, ensure_ascii=False, indent=2)
-
-    #     except KeyboardInterrupt:
-    #         print("\n捕获到中断信号 (Ctrl+C)，正在退出 ShellAI...")
-    #         break
-    #     except Exception as e:
-    #         print(f"程序运行中发生未捕获的错误：{e}")
-    #         import traceback
-    #         traceback.print_exc()
-    pass # 移除原有的命令行交互逻辑
+    # 根据环境选择配置
+    if ENVIRONMENT == 'development':
+        uvicorn.run(
+            "main:app",
+            host="127.0.0.1",
+            port=5001,
+            log_level="info",
+            reload=True,
+            reload_dirs=["./"]
+        )
+    else:
+        uvicorn.run(
+            app,
+            host="0.0.0.0",
+            port=5001,
+            log_level="info"
+        )
 
 if __name__ == "__main__":
     if not base_dir.exists():

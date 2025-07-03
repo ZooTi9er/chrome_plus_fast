@@ -1,7 +1,64 @@
-// api.js
+// api.js - Chrome Plus V2.0 API客户端
+// 支持WebSocket实时通信和HTTP降级
+
 const API_BASE_URL = 'http://localhost:5001';
 
+// 通信模式配置
+let USE_WEBSOCKET = true; // 默认使用WebSocket
+let WEBSOCKET_AVAILABLE = false;
+
+/**
+ * 检查WebSocket是否可用
+ */
+async function checkWebSocketAvailability() {
+    try {
+        // 检查健康端点
+        const response = await fetch(`${API_BASE_URL}/health`, {
+            method: 'GET',
+            timeout: 5000
+        });
+
+        if (response.ok) {
+            const data = await response.json();
+            WEBSOCKET_AVAILABLE = data.version === '2.0.0';
+            console.log('WebSocket可用性检查:', WEBSOCKET_AVAILABLE);
+            return WEBSOCKET_AVAILABLE;
+        }
+    } catch (error) {
+        console.log('WebSocket可用性检查失败，将使用HTTP模式:', error.message);
+        WEBSOCKET_AVAILABLE = false;
+    }
+
+    return false;
+}
+
+/**
+ * 主要的消息发送函数 - 自动选择最佳通信方式
+ */
 async function sendMessageToBackend(message) {
+    // 检查WebSocket可用性
+    if (USE_WEBSOCKET && !WEBSOCKET_AVAILABLE) {
+        await checkWebSocketAvailability();
+    }
+
+    // 根据可用性选择通信方式
+    if (USE_WEBSOCKET && WEBSOCKET_AVAILABLE) {
+        try {
+            return await sendMessageToBackendWS(message);
+        } catch (error) {
+            console.warn('WebSocket通信失败，降级到HTTP:', error.message);
+            // 降级到HTTP
+            return await sendMessageToBackendHTTP(message);
+        }
+    } else {
+        return await sendMessageToBackendHTTP(message);
+    }
+}
+
+/**
+ * HTTP方式发送消息 (原有实现，重命名)
+ */
+async function sendMessageToBackendHTTP(message) {
     try {
         // 检查是否有自定义配置（包括代理设置）
         const settings = await new Promise((resolve) => {
@@ -203,4 +260,106 @@ async function testAPIConnection(settings) {
             proxyInfo: getProxyDisplayInfo(settings)
         };
     }
+}
+
+/**
+ * 设置通信模式
+ */
+function setWebSocketMode(enabled) {
+    USE_WEBSOCKET = enabled;
+    console.log('通信模式设置为:', enabled ? 'WebSocket' : 'HTTP');
+}
+
+/**
+ * 获取通信状态
+ */
+function getConnectionStatus() {
+    return {
+        useWebSocket: USE_WEBSOCKET,
+        webSocketAvailable: WEBSOCKET_AVAILABLE,
+        currentMode: (USE_WEBSOCKET && WEBSOCKET_AVAILABLE) ? 'WebSocket' : 'HTTP'
+    };
+}
+
+/**
+ * 初始化API客户端
+ */
+async function initializeAPIClient() {
+    console.log('初始化Chrome Plus V2.0 API客户端...');
+
+    // 检查WebSocket可用性
+    await checkWebSocketAvailability();
+
+    // 如果WebSocket可用，预连接
+    if (USE_WEBSOCKET && WEBSOCKET_AVAILABLE) {
+        try {
+            await initializeWebSocket();
+            console.log('WebSocket预连接成功');
+        } catch (error) {
+            console.warn('WebSocket预连接失败，将在需要时重试:', error.message);
+        }
+    }
+
+    console.log('API客户端初始化完成，当前模式:', getConnectionStatus().currentMode);
+}
+
+/**
+ * 测试连接 (支持WebSocket和HTTP)
+ */
+async function testConnection(settings) {
+    try {
+        const status = getConnectionStatus();
+        console.log('测试连接，当前模式:', status.currentMode);
+
+        if (status.currentMode === 'WebSocket') {
+            // 测试WebSocket连接
+            try {
+                const client = getWebSocketClient();
+                if (!client.isConnected) {
+                    await client.connect();
+                }
+
+                // 发送测试消息
+                const testResponse = await sendMessageToBackendWS('连接测试');
+
+                return {
+                    success: true,
+                    message: 'WebSocket连接测试成功',
+                    mode: 'WebSocket',
+                    response: testResponse.substring(0, 100) + (testResponse.length > 100 ? '...' : '')
+                };
+            } catch (error) {
+                console.warn('WebSocket测试失败，尝试HTTP:', error.message);
+                // 降级到HTTP测试
+            }
+        }
+
+        // HTTP连接测试
+        const httpResult = await testAPIConnection(settings);
+        return {
+            ...httpResult,
+            mode: 'HTTP'
+        };
+
+    } catch (error) {
+        return {
+            success: false,
+            message: `连接测试失败: ${error.message}`,
+            mode: 'Unknown'
+        };
+    }
+}
+
+// 导出函数供其他模块使用
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = {
+        sendMessageToBackend,
+        sendMessageToBackendHTTP,
+        testAPIConnection,
+        testConnection,
+        getProxyDisplayInfo,
+        setWebSocketMode,
+        getConnectionStatus,
+        initializeAPIClient
+    };
 }

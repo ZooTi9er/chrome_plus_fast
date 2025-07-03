@@ -1,5 +1,14 @@
-// chat.js
-document.addEventListener('DOMContentLoaded', () => {
+// chat.js - Chrome Plus V2.0 聊天界面
+// 支持WebSocket实时通信和HTTP降级
+
+// 全局状态
+let connectionStatus = {
+    mode: 'HTTP',
+    connected: false,
+    channelId: null
+};
+
+document.addEventListener('DOMContentLoaded', async () => {
     const chatBox = document.getElementById('chat-box');
     const messageInput = document.getElementById('message-input');
     const sendButton = document.getElementById('send-button');
@@ -28,6 +37,9 @@ document.addEventListener('DOMContentLoaded', () => {
     if (typeof hljs !== 'undefined') {
         hljs.highlightAll();
     }
+
+    // 初始化Chrome Plus V2.0
+    await initializeChatInterface();
 
     sendButton.addEventListener('click', sendMessage);
     messageInput.addEventListener('keypress', (e) => {
@@ -555,15 +567,240 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // Initial message or welcome
-    appendMessage('llm', `# 欢迎使用 LLM 助手！
+    // 显示初始欢迎消息
+    showWelcomeMessage();
+});
 
-你好！我是你的智能助手，可以帮助你：
+/**
+ * 初始化聊天界面
+ */
+async function initializeChatInterface() {
+    console.log('初始化Chrome Plus V2.0聊天界面...');
+
+    // 添加连接状态指示器
+    addConnectionStatusIndicator();
+
+    // 初始化API客户端
+    try {
+        await initializeAPIClient();
+        updateConnectionStatus();
+
+        // 设置WebSocket事件监听器
+        setupWebSocketEventListeners();
+
+        console.log('聊天界面初始化完成');
+    } catch (error) {
+        console.error('聊天界面初始化失败:', error);
+        updateConnectionStatus();
+    }
+}
+
+/**
+ * 添加连接状态指示器
+ */
+function addConnectionStatusIndicator() {
+    const header = document.querySelector('.header');
+    if (header && !document.getElementById('connection-status')) {
+        const statusIndicator = document.createElement('div');
+        statusIndicator.id = 'connection-status';
+        statusIndicator.className = 'connection-status';
+        statusIndicator.innerHTML = `
+            <span class="status-dot"></span>
+            <span class="status-text">连接中...</span>
+            <span class="status-mode"></span>
+        `;
+
+        // 添加样式
+        const style = document.createElement('style');
+        style.textContent = `
+            .connection-status {
+                display: flex;
+                align-items: center;
+                gap: 5px;
+                font-size: 12px;
+                color: #666;
+            }
+            .status-dot {
+                width: 8px;
+                height: 8px;
+                border-radius: 50%;
+                background-color: #ffa500;
+                animation: pulse 2s infinite;
+            }
+            .status-dot.connected {
+                background-color: #4caf50;
+                animation: none;
+            }
+            .status-dot.disconnected {
+                background-color: #f44336;
+                animation: none;
+            }
+            .status-mode {
+                font-weight: bold;
+                color: #2196f3;
+            }
+            @keyframes pulse {
+                0% { opacity: 1; }
+                50% { opacity: 0.5; }
+                100% { opacity: 1; }
+            }
+        `;
+        document.head.appendChild(style);
+
+        header.appendChild(statusIndicator);
+    }
+}
+
+/**
+ * 更新连接状态显示
+ */
+function updateConnectionStatus() {
+    const statusIndicator = document.getElementById('connection-status');
+    if (!statusIndicator) return;
+
+    const statusDot = statusIndicator.querySelector('.status-dot');
+    const statusText = statusIndicator.querySelector('.status-text');
+    const statusMode = statusIndicator.querySelector('.status-mode');
+
+    const status = getConnectionStatus();
+    connectionStatus = {
+        mode: status.currentMode,
+        connected: status.webSocketAvailable && status.useWebSocket,
+        channelId: null
+    };
+
+    // 更新WebSocket连接状态
+    if (status.currentMode === 'WebSocket') {
+        const wsClient = getWebSocketClient();
+        if (wsClient) {
+            const wsStatus = wsClient.getConnectionStatus();
+            connectionStatus.connected = wsStatus.isConnected;
+            connectionStatus.channelId = wsStatus.channelId;
+        }
+    }
+
+    // 更新UI
+    if (connectionStatus.connected) {
+        statusDot.className = 'status-dot connected';
+        statusText.textContent = '已连接';
+    } else if (status.currentMode === 'HTTP') {
+        statusDot.className = 'status-dot connected';
+        statusText.textContent = 'HTTP模式';
+    } else {
+        statusDot.className = 'status-dot disconnected';
+        statusText.textContent = '未连接';
+    }
+
+    statusMode.textContent = status.currentMode;
+}
+
+/**
+ * 设置WebSocket事件监听器
+ */
+function setupWebSocketEventListeners() {
+    const wsClient = getWebSocketClient();
+    if (!wsClient) return;
+
+    // 连接状态变化
+    wsClient.onConnectionChange = (connected, channelId) => {
+        connectionStatus.connected = connected;
+        connectionStatus.channelId = channelId;
+        updateConnectionStatus();
+
+        if (connected) {
+            console.log('WebSocket连接已建立，频道ID:', channelId);
+        } else {
+            console.log('WebSocket连接已断开');
+        }
+    };
+
+    // 消息处理
+    wsClient.onMessage = (data) => {
+        handleWebSocketMessage(data);
+    };
+
+    // 错误处理
+    wsClient.onError = (error) => {
+        console.error('WebSocket错误:', error);
+        appendMessage('system', `⚠️ WebSocket连接错误: ${error.message}`);
+    };
+}
+
+/**
+ * 处理WebSocket消息
+ */
+function handleWebSocketMessage(data) {
+    const messageType = data.type;
+
+    switch (messageType) {
+        case 'status':
+            handleStatusMessage(data);
+            break;
+        case 'result':
+            handleResultMessage(data);
+            break;
+        case 'error':
+            handleErrorMessage(data);
+            break;
+        case 'pong':
+            // 心跳响应，无需处理
+            break;
+        default:
+            console.log('收到未知类型的WebSocket消息:', data);
+    }
+}
+
+/**
+ * 处理状态消息
+ */
+function handleStatusMessage(data) {
+    const status = data.data.status;
+    const message = data.data.message;
+
+    if (status === 'processing') {
+        appendMessage('system', `🔄 ${message}`);
+    } else if (status === 'queued') {
+        appendMessage('system', `📋 ${message}`);
+    }
+}
+
+/**
+ * 处理结果消息
+ */
+function handleResultMessage(data) {
+    if (data.success) {
+        appendMessage('llm', data.response);
+    } else {
+        const errorMsg = data.error || '处理失败';
+        appendMessage('system', `❌ 错误: ${errorMsg}`);
+    }
+}
+
+/**
+ * 处理错误消息
+ */
+function handleErrorMessage(data) {
+    const errorMsg = data.data?.message || '未知错误';
+    appendMessage('system', `❌ ${errorMsg}`);
+}
+
+/**
+ * 显示欢迎消息
+ */
+function showWelcomeMessage() {
+    const version = connectionStatus.mode === 'WebSocket' ? 'V2.0 (WebSocket)' : 'V2.0 (HTTP)';
+
+    appendMessage('llm', `# 欢迎使用 Chrome Plus ${version}！
+
+你好！我是你的智能助手，现在支持实时通信，可以帮助你：
 
 - 📝 **文件操作**：创建、读取、修改文件
 - 🗂️ **目录管理**：浏览、创建、管理目录结构
 - 💻 **代码编写**：提供代码示例和解决方案
 - 🔍 **问题解答**：回答各种技术问题
+- ⚡ **实时响应**：${connectionStatus.mode === 'WebSocket' ? 'WebSocket实时通信' : 'HTTP兼容模式'}
+
+${connectionStatus.connected ? '🟢 连接状态：已连接' : '🟡 连接状态：HTTP模式'}
 
 有什么可以帮助你的吗？`);
-});
+}

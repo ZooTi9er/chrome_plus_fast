@@ -1,0 +1,104 @@
+services:
+  # Redis - 消息总线和缓存
+  redis:
+    image: redis:7-alpine
+    container_name: chrome_plus_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - chrome_plus_network
+
+  # FastAPI 后端服务 - API网关
+  backend:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    platform: linux/amd64
+    container_name: chrome_plus_backend
+    ports:
+      - "5001:5001"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - ENVIRONMENT=production
+    env_file:
+      - ./server/.env
+    volumes:
+      - ./server:/app
+      - ./server/test:/app/test  # 沙箱目录
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - chrome_plus_network
+    restart: unless-stopped
+
+  # Celery Worker - 任务处理器
+  worker:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    platform: linux/amd64
+    container_name: chrome_plus_worker
+    command: python -m celery -A tasks worker --loglevel=info --concurrency=4
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - ENVIRONMENT=production
+    env_file:
+      - ./server/.env
+    volumes:
+      - ./server:/app
+      - ./server/test:/app/test  # 沙箱目录
+    depends_on:
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    networks:
+      - chrome_plus_network
+    restart: unless-stopped
+
+  # Celery Flower - 任务监控 (可选)
+  flower:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    platform: linux/amd64
+    container_name: chrome_plus_flower
+    command: python -m celery -A tasks flower --port=5555
+    ports:
+      - "5555:5555"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    depends_on:
+      - redis
+      - worker
+    networks:
+      - chrome_plus_network
+    restart: unless-stopped
+
+volumes:
+  redis_data:
+    driver: local
+
+networks:
+  chrome_plus_network:
+    driver: bridge
