@@ -13,6 +13,14 @@ import json
 import logging
 from typing import Optional, Dict, Any, List
 from contextlib import asynccontextmanager
+import datetime
+import difflib
+import re
+import shutil
+import zipfile
+import tarfile
+import httpx
+import ast
 
 # 环境和配置
 from dotenv import load_dotenv
@@ -22,21 +30,13 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-# Redis（简化版本不使用Celery）
-import redis.asyncio as redis
-# from celery.result import AsyncResult
-
-# 导入任务模块（简化版本不使用Celery）
-# from tasks import celery_app, process_ai_message
-
-# 原有的文件操作模块
-import datetime
-import difflib
-import re
-import shutil
-import zipfile
-import tarfile
-import httpx
+# Redis（可选依赖）
+try:
+    import redis.asyncio as redis
+    REDIS_AVAILABLE = True
+except ImportError:
+    REDIS_AVAILABLE = False
+    redis = None
 
 # AI模块 (可选，用于兼容性)
 try:
@@ -46,7 +46,6 @@ try:
     from pydantic_ai.messages import ModelMessage
     PYDANTIC_AI_AVAILABLE = True
 except ImportError:
-    logger.warning("pydantic-ai不可用，将使用简化模式")
     PYDANTIC_AI_AVAILABLE = False
     Agent = None
     OpenAIModel = None
@@ -63,6 +62,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# 检查Redis可用性
+if not REDIS_AVAILABLE:
+    logger.warning("Redis不可用，将禁用Redis相关功能")
+
 # --- 环境配置 ---
 REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
 ENVIRONMENT = os.getenv('ENVIRONMENT', 'development')
@@ -70,8 +73,11 @@ DEBUG = os.getenv('DEBUG', 'false').lower() == 'true'
 
 # AI API配置
 deepseek_api_key = os.getenv('DEEPSEEK_API_KEY')
+tavily_api_key = os.getenv('TAVILY_API_KEY')
 if not deepseek_api_key:
     logger.warning("未找到 DEEPSEEK_API_KEY，使用测试模式")
+if not tavily_api_key:
+    logger.warning("未找到 TAVILY_API_KEY，网络搜索功能将不可用")
 
 # Redis连接池
 redis_pool = None
@@ -140,7 +146,8 @@ manager = ConnectionManager()
 async def redis_listener():
     """监听Redis发布/订阅消息并转发到WebSocket"""
     global redis_pool
-    if not redis_pool:
+    if not redis_pool or not REDIS_AVAILABLE:
+        logger.info("Redis不可用，跳过Redis监听器")
         return
 
     pubsub = redis_pool.pubsub()
@@ -184,16 +191,24 @@ async def lifespan(app: FastAPI):
     logger.info("Chrome Plus V2.0 后端服务启动中...")
 
     try:
-        # 初始化Redis连接池
-        redis_pool = redis.ConnectionPool.from_url(REDIS_URL)
-        redis_client = redis.Redis(connection_pool=redis_pool)
+        # 初始化Redis连接池（如果可用）
+        if REDIS_AVAILABLE:
+            try:
+                redis_pool = redis.ConnectionPool.from_url(REDIS_URL)
+                redis_client = redis.Redis(connection_pool=redis_pool)
 
-        # 测试Redis连接
-        await redis_client.ping()
-        logger.info("Redis连接成功")
+                # 测试Redis连接
+                await redis_client.ping()
+                logger.info("Redis连接成功")
 
-        # 启动Redis监听器
-        redis_task = asyncio.create_task(redis_listener())
+                # 启动Redis监听器
+                redis_task = asyncio.create_task(redis_listener())
+            except Exception as e:
+                logger.warning(f"Redis连接失败，将禁用Redis功能: {e}")
+                redis_pool = None
+        else:
+            logger.info("Redis不可用，跳过Redis初始化")
+            redis_pool = None
 
         logger.info("后端服务启动完成")
 
@@ -221,8 +236,6 @@ async def lifespan(app: FastAPI):
 # 全局基础目录
 base_dir = Path(__file__).parent.resolve() / "test"
 os.makedirs(base_dir, exist_ok=True)
-
-
 
 # --- Pydantic 模型定义 ---
 class ProxyAuth(BaseModel):
@@ -283,33 +296,44 @@ class ErrorResponse(BaseModel):
         }
 
 # --- 代理配置函数 ---
-def create_http_client_with_proxy(proxy_config: Optional[ProxyConfig] = None) -> httpx.AsyncClient:
-    """创建带代理配置的HTTP客户端"""
-
-    # 基础配置
-    client_kwargs = {
-        'timeout': httpx.Timeout(30.0, connect=10.0),  # 30秒总超时，10秒连接超时
-        'limits': httpx.Limits(max_keepalive_connections=5, max_connections=10),  # 连接池限制
-        'follow_redirects': True,  # 跟随重定向
-    }
-
+def _get_proxy_url(proxy_config: ProxyConfig) -> Optional[str]:
+    """根据ProxyConfig构建代理URL"""
     if proxy_config and proxy_config.enabled and proxy_config.host and proxy_config.port:
-        # 构建代理URL
         if proxy_config.auth:
-            # URL编码用户名和密码以处理特殊字符
             import urllib.parse
             username = urllib.parse.quote(proxy_config.auth.username)
             password = urllib.parse.quote(proxy_config.auth.password)
-            proxy_url = f"{proxy_config.type}://{username}:{password}@{proxy_config.host}:{proxy_config.port}"
+            return f"{proxy_config.type}://{username}:{password}@{proxy_config.host}:{proxy_config.port}"
         else:
-            proxy_url = f"{proxy_config.type}://{proxy_config.host}:{proxy_config.port}"
+            return f"{proxy_config.type}://{proxy_config.host}:{proxy_config.port}"
+    return None
 
-        print(f"使用代理: {proxy_config.type}://{proxy_config.host}:{proxy_config.port}")
-
-        # 添加代理配置
-        client_kwargs['proxy'] = proxy_url
-
+def create_async_http_client_with_proxy(proxy_config: Optional[ProxyConfig] = None) -> httpx.AsyncClient:
+    """创建带代理配置的异步HTTP客户端"""
+    client_kwargs = {
+        'timeout': httpx.Timeout(30.0, connect=10.0),
+        'limits': httpx.Limits(max_keepalive_connections=5, max_connections=10),
+        'follow_redirects': True,
+    }
+    proxy_url = _get_proxy_url(proxy_config)
+    if proxy_url:
+        logger.info(f"使用代理: {proxy_config.type}://{proxy_config.host}:{proxy_config.port}")
+        client_kwargs['proxies'] = proxy_url
     return httpx.AsyncClient(**client_kwargs)
+
+def create_sync_http_client_with_proxy(proxy_config: Optional[ProxyConfig] = None) -> httpx.Client:
+    """创建带代理配置的同步HTTP客户端"""
+    client_kwargs = {
+        'timeout': httpx.Timeout(30.0, connect=10.0),
+        'limits': httpx.Limits(max_keepalive_connections=5, max_connections=10),
+        'follow_redirects': True,
+    }
+    proxy_url = _get_proxy_url(proxy_config)
+    if proxy_url:
+        logger.info(f"使用代理: {proxy_config.type}://{proxy_config.host}:{proxy_config.port}")
+        client_kwargs['proxies'] = proxy_url
+    return httpx.Client(**client_kwargs)
+
 
 def create_openai_model_with_proxy(proxy_config: Optional[ProxyConfig] = None):
     """创建带代理配置的OpenAI模型"""
@@ -317,16 +341,12 @@ def create_openai_model_with_proxy(proxy_config: Optional[ProxyConfig] = None):
         return None
 
     try:
-        # 创建带代理的HTTP客户端
-        http_client = create_http_client_with_proxy(proxy_config)
-
-        # 创建OpenAI Provider with custom http client
+        http_client = create_async_http_client_with_proxy(proxy_config)
         provider = OpenAIProvider(
             base_url='https://api.deepseek.com',
             api_key=deepseek_api_key,
             http_client=http_client
         )
-
         return OpenAIModel('deepseek-chat', provider=provider)
     except Exception as e:
         logger.error(f"创建代理模型失败: {e}")
@@ -334,55 +354,39 @@ def create_openai_model_with_proxy(proxy_config: Optional[ProxyConfig] = None):
 
 async def test_proxy_connection(proxy_config: ProxyConfig) -> tuple[bool, str]:
     """测试代理连接"""
+    client = create_async_http_client_with_proxy(proxy_config)
     try:
-        client = create_http_client_with_proxy(proxy_config)
-
-        # 测试连接到一个简单的HTTP服务
         test_url = "https://httpbin.org/ip"
         response = await client.get(test_url, timeout=10.0)
-
-        if response.status_code == 200:
-            data = response.json()
-            return True, f"代理连接成功，IP: {data.get('origin', 'unknown')}"
-        else:
-            return False, f"代理连接失败，HTTP状态码: {response.status_code}"
-
+        response.raise_for_status()
+        data = response.json()
+        return True, f"代理连接成功，IP: {data.get('origin', 'unknown')}"
     except Exception as e:
         return False, f"代理连接测试失败: {str(e)}"
     finally:
-        try:
-            await client.aclose()
-        except:
-            pass
+        await client.aclose()
 
 def validate_proxy_config(proxy_config: Optional[ProxyConfig]) -> tuple[bool, str]:
     """验证代理配置"""
     if not proxy_config or not proxy_config.enabled:
         return True, ""
-
-    # 验证必需字段
     if not proxy_config.host or not proxy_config.host.strip():
         return False, "代理地址不能为空"
-
-    if not proxy_config.port or proxy_config.port < 1 or proxy_config.port > 65535:
+    if not proxy_config.port or not (1 <= proxy_config.port <= 65535):
         return False, "代理端口必须在1-65535之间"
-
     if proxy_config.type not in ['http', 'https', 'socks5']:
         return False, f"不支持的代理类型: {proxy_config.type}"
-
-    # 验证认证信息
     if proxy_config.auth:
         if not proxy_config.auth.username or not proxy_config.auth.username.strip():
             return False, "代理用户名不能为空"
-        if not proxy_config.auth.password or not proxy_config.auth.password.strip():
+        if not proxy_config.auth.password: # 允许空密码
             return False, "代理密码不能为空"
-
     return True, ""
 
 # --- 数据模型 ---
 class WebSocketMessage(BaseModel):
     """WebSocket消息模型"""
-    type: str  # 'chat', 'status', 'error', 'result'
+    type: str
     data: Dict[str, Any]
     timestamp: Optional[str] = None
     channel_id: Optional[str] = None
@@ -396,16 +400,16 @@ class ChatWebSocketRequest(BaseModel):
 
 # --- FastAPI 应用实例 ---
 app = FastAPI(
-    title="Chrome Plus V2.0 API",
-    description="AI助手API，支持WebSocket实时通信、异步任务处理和文件操作",
-    version="2.0.0",
+    title="Chrome Plus V2.0 API（增强版）",
+    description="AI智能体API，支持WebSocket实时通信、Redis消息队列、文件操作和网络搜索",
+    version="2.0.2-fixed", # Version updated
     lifespan=lifespan
 )
 
 # 配置CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["chrome-extension://*", "http://localhost:*"],
+    allow_origins=["chrome-extension://*", "http://localhost:*", "http://127.0.0.1:*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -535,7 +539,6 @@ def find_files(pattern: str, path: str = ".", search_content_regex: Optional[str
         except re.error as e: return f"提供的正则表达式 '{search_content_regex}' 无效: {e}"
         for file_path_obj in matched_paths:
             if file_path_obj.is_file(): # Only search content in files
-                # Double check path validity, though glob should be within base_dir
                 val_ok, val_msg = _validate_path(file_path_obj, check_existence=True, expect_file=True)
                 if not val_ok:
                     output_results.append(f"跳过无效路径 {file_path_obj}: {val_msg}")
@@ -564,7 +567,7 @@ def replace_in_file(name: str, search_regex: str, replace_string: str, count: in
     except Exception as e: return f"在文件 '{name}' 中进行替换操作时发生错误：{e}"
 def archive_files(archive_name: str, items_to_archive: list[str], archive_format: str = "zip") -> str:
     print(f"(archive_files '{archive_name}' items='{items_to_archive}' format='{archive_format}')"); guessed_format = archive_format.lower()
-    if guessed_format == "tar": # Auto-detect compression for tar based on extension
+    if guessed_format == "tar":
         if archive_name.lower().endswith((".tar.gz", ".tgz")): guessed_format = "gztar"
         elif archive_name.lower().endswith((".tar.bz2", ".tbz2")): guessed_format = "bztar"
 
@@ -594,7 +597,6 @@ def archive_files(archive_name: str, items_to_archive: list[str], archive_format
                             root_path_obj = Path(root)
                             for file_name_in_dir in files_in_dir:
                                 file_to_add_path = root_path_obj / file_name_in_dir
-                                # Ensure file_to_add_path is also validated (though os.walk within validated dir is usually safe)
                                 ok_f, msg_f = _validate_path(file_to_add_path, check_existence=True, expect_file=True)
                                 if not ok_f:
                                     print(f"警告: 跳过归档中的无效文件 {file_to_add_path}: {msg_f}")
@@ -606,11 +608,11 @@ def archive_files(archive_name: str, items_to_archive: list[str], archive_format
             with tarfile.open(archive_path_full, tar_mode) as tf:
                 for item_abs_path in abs_paths_to_archive:
                     arcname_in_tar = item_abs_path.relative_to(base_dir)
-                    tf.add(item_abs_path, arcname=arcname_in_tar) # tf.add handles directories recursively
+                    tf.add(item_abs_path, arcname=arcname_in_tar)
         return f"成功创建归档 '{archive_name}' (格式: {final_archive_format})。"
     except Exception as e:
         if archive_path_full.exists():
-            try: archive_path_full.unlink() # Attempt to clean up failed archive
+            try: archive_path_full.unlink()
             except: pass
         return f"创建归档 '{archive_name}' 时发生错误：{e}"
 def extract_archive(archive_name: str, destination_path: str = ".", specific_members: Optional[list[str]] = None) -> str:
@@ -621,28 +623,25 @@ def extract_archive(archive_name: str, destination_path: str = ".", specific_mem
     extraction_dest_dir_relative = Path(destination_path)
     extraction_dest_dir_abs = (base_dir / extraction_dest_dir_relative).resolve()
     
-    # Validate destination directory (it might not exist yet, which is fine for mkdir)
-    # If it exists, it must be a directory.
     ok_dest, msg_dest = _validate_path(extraction_dest_dir_abs, check_existence=False, expect_dir=True if extraction_dest_dir_abs.exists() else False)
     if not ok_dest: return msg_dest
 
     try:
         extraction_dest_dir_abs.mkdir(parents=True, exist_ok=True)
         extracted_count = 0
-        actual_extracted_members = [] # For reporting
+        actual_extracted_members = []
 
         if archive_file_to_extract.name.lower().endswith(".zip"):
             with zipfile.ZipFile(archive_file_to_extract, 'r') as zf:
                 members_to_extract_from_zip = zf.namelist()
                 if specific_members:
                     selected_zip_members = []
-                    # Normalize member names for comparison (replace \ with /)
                     normalized_zip_member_map = {m.replace("\\", "/"): m for m in members_to_extract_from_zip}
                     for sm_query in specific_members:
                         normalized_sm_query = sm_query.replace("\\", "/")
                         if normalized_sm_query in normalized_zip_member_map:
                             selected_zip_members.append(normalized_zip_member_map[normalized_sm_query])
-                        else: # Check if it's a directory prefix
+                        else:
                             dir_sm_query = normalized_sm_query if normalized_sm_query.endswith("/") else normalized_sm_query + "/"
                             found_dir_member = False
                             for zip_m_norm, zip_m_orig in normalized_zip_member_map.items():
@@ -651,18 +650,18 @@ def extract_archive(archive_name: str, destination_path: str = ".", specific_mem
                                     found_dir_member = True
                             if not found_dir_member:
                                 print(f"警告：在ZIP归档 '{archive_name}' 中未找到成员或以此为前缀的成员 '{sm_query}'。")
-                    members_to_extract_from_zip = list(set(selected_zip_members)) # Remove duplicates
+                    members_to_extract_from_zip = list(set(selected_zip_members))
                 
-                if not members_to_extract_from_zip and specific_members: # If specific were requested but none found
+                if not members_to_extract_from_zip and specific_members:
                     return f"错误：在ZIP归档中未找到任何指定的成员进行解压。"
 
                 zf.extractall(path=extraction_dest_dir_abs, members=members_to_extract_from_zip if specific_members else None)
                 extracted_count = len(members_to_extract_from_zip if specific_members else zf.namelist())
                 actual_extracted_members = members_to_extract_from_zip if specific_members else zf.namelist()
 
-        elif tarfile.is_tarfile(archive_file_to_extract): # Handles .tar, .tar.gz, .tar.bz2 etc.
-            with tarfile.open(archive_file_to_extract, 'r:*') as tf: # r:* tries to auto-detect compression
-                tar_members_to_extract_info = [] # List of TarInfo objects
+        elif tarfile.is_tarfile(archive_file_to_extract):
+            with tarfile.open(archive_file_to_extract, 'r:*') as tf:
+                tar_members_to_extract_info = []
                 all_tar_members_info = tf.getmembers()
 
                 if specific_members:
@@ -671,7 +670,7 @@ def extract_archive(archive_name: str, destination_path: str = ".", specific_mem
                         normalized_sm_query = sm_name_query.replace("\\", "/")
                         if normalized_sm_query in normalized_tar_member_map:
                             tar_members_to_extract_info.append(normalized_tar_member_map[normalized_sm_query])
-                        else: # Check for directory prefix
+                        else:
                             dir_sm_query = normalized_sm_query if normalized_sm_query.endswith("/") else normalized_sm_query + "/"
                             found_dir_member = False
                             for tar_m_norm, tar_m_info in normalized_tar_member_map.items():
@@ -680,7 +679,7 @@ def extract_archive(archive_name: str, destination_path: str = ".", specific_mem
                                     found_dir_member = True
                             if not found_dir_member:
                                 print(f"警告：在TAR归档 '{archive_name}' 中未找到成员或以此为前缀的成员 '{sm_name_query}'。")
-                    tar_members_to_extract_info = list(set(tar_members_to_extract_info)) # Remove duplicates
+                    tar_members_to_extract_info = list(set(tar_members_to_extract_info))
                 else:
                     tar_members_to_extract_info = all_tar_members_info
                 
@@ -693,7 +692,6 @@ def extract_archive(archive_name: str, destination_path: str = ".", specific_mem
         else:
             return f"错误：无法识别的归档文件格式或文件 '{archive_name}' 已损坏。"
 
-        # Path for reporting should be relative to base_dir
         display_destination_path = str(extraction_dest_dir_abs.relative_to(base_dir)) if extraction_dest_dir_abs.is_relative_to(base_dir) else str(extraction_dest_dir_abs)
 
         result_msg = f"从 '{archive_name}' 成功解压 {extracted_count} 个成员/文件到 './{display_destination_path}'。"
@@ -710,17 +708,16 @@ def backup_file(name: str, backup_dir_name: str = "backups") -> str:
     backup_target_dir_relative = Path(backup_dir_name)
     backup_target_dir_abs = (base_dir / backup_target_dir_relative).resolve()
     
-    ok_dest_dir, msg_dest_dir = _validate_path(backup_target_dir_abs, check_existence=False) # Dir may not exist
+    ok_dest_dir, msg_dest_dir = _validate_path(backup_target_dir_abs, check_existence=False)
     if not ok_dest_dir: return msg_dest_dir
 
     try: backup_target_dir_abs.mkdir(parents=True, exist_ok=True)
     except Exception as e: return f"创建备份目录 '{backup_dir_name}' 失败: {e}"
 
     timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
-    backup_filename = f"{source_file.stem}.{timestamp}{source_file.suffix}.bak" # More robust for extensions
+    backup_filename = f"{source_file.stem}.{timestamp}{source_file.suffix}.bak"
     destination_backup_file_path = backup_target_dir_abs / backup_filename
 
-    # Final check for destination file path (should not exist, and be within base_dir)
     ok_dest_file, msg_dest_file = _validate_path(destination_backup_file_path, check_existence=False)
     if not ok_dest_file: return msg_dest_file
     if destination_backup_file_path.exists(): return f"错误：备份目标文件 '{destination_backup_file_path.name}' 已在 '{backup_dir_name}' 中存在。"
@@ -745,7 +742,76 @@ def get_system_info() -> str:
     }
     return json.dumps(info, ensure_ascii=False, indent=2)
 
-# --- 系统提示 (保持不变) ---
+def tavily_search_tool(query: str) -> str:
+    """网络搜索工具，使用Tavily API进行实时搜索，包含重试机制"""
+    print(f"(tavily_search_tool '{query}')")
+    if not tavily_api_key:
+        return "错误：未配置TAVILY_API_KEY，无法进行网络搜索。"
+
+    endpoint = "https://api.tavily.com/search"
+    headers = {'Content-Type': 'application/json', 'Authorization': f'Bearer {tavily_api_key}'}
+    data = {'query': query, 'search_depth': 'basic', 'include_answer': True, 'max_results': 5}
+
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            # 每次重试都创建新的客户端实例
+            client = create_sync_http_client_with_proxy(None)
+
+            with client:
+                response = client.post(endpoint, headers=headers, json=data)
+                response.raise_for_status()
+                result = response.json()
+
+                if result.get('results'):
+                    formatted_results = f"🔍 搜索查询: {query}\n\n"
+                    if result.get('answer'):
+                        formatted_results += f"📝 答案摘要:\n{result['answer']}\n\n"
+                    formatted_results += "🌐 相关链接:\n"
+                    for i, item in enumerate(result['results'][:5], 1):
+                        title = item.get('title', '无标题')
+                        url = item.get('url', '')
+                        content = item.get('content', '')[:200] + '...' if len(item.get('content', '')) > 200 else item.get('content', '')
+                        formatted_results += f"{i}. **{title}**\n   🔗 {url}\n   📄 {content}\n\n"
+                    return formatted_results
+                return f"未找到关于 '{query}' 的搜索结果。"
+
+        except httpx.ConnectError as e:
+            if "SSL" in str(e) or "EOF" in str(e):
+                logger.warning(f"Tavily搜索SSL连接错误 (尝试 {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    import time
+                    time.sleep(2 ** attempt)  # 指数退避
+                    continue
+                else:
+                    return f"网络搜索失败：SSL连接错误。建议检查网络连接。"
+            else:
+                return f"网络搜索失败：连接错误 - {str(e)}"
+
+        except httpx.TimeoutException as e:
+            logger.warning(f"Tavily搜索超时 (尝试 {attempt + 1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                import time
+                time.sleep(1)
+                continue
+            else:
+                return f"网络搜索失败：请求超时。"
+
+        except httpx.HTTPStatusError as e:
+            return f"网络搜索失败：HTTP错误 {e.response.status_code}"
+
+        except Exception as e:
+            logger.error(f"Tavily搜索发生未知错误: {e}")
+            if attempt < max_retries - 1:
+                import time
+                time.sleep(1)
+                continue
+            else:
+                return f"网络搜索失败：{str(e)}"
+
+    return "网络搜索失败：超过最大重试次数"
+
+# --- 系统提示 (修改后) ---
 BASE_SYSTEM_PROMPT = f"""你是 ShellAI，一个经验丰富的程序员助手，使用中文与用户交流。
 你的主要任务是协助用户进行文件和目录操作，以及在需要时进行网络搜索。
 当前工作目录严格限制在 './{base_dir.name}/'，所有文件操作都将在这个沙箱目录内进行。
@@ -766,118 +832,266 @@ BASE_SYSTEM_PROMPT = f"""你是 ShellAI，一个经验丰富的程序员助手�
   `archive_files(archive_name: str, items_to_archive: list[str], archive_format: str = "zip")`: 归档文件或目录 (支持 zip, tar, tar.gz/tgz, tar.bz2/tbz2)。
   `extract_archive(archive_name: str, destination_path: str = ".", specific_members: list[str] = None)`: 解压归档文件。
   `backup_file(name: str, backup_dir_name: str = "backups")`: 备份文件。
-  `get_system_info()`: 获取本机系统信息，包括操作系统、主机名、CPU核心数、内存和当前用户。
+  `get_system_info()`: 获取本机系统信息。
 - 网络搜索:
-  `tavily_search_tool(query: str)`: 当你需要查找当前知识库之外的信息、实时信息或进行广泛的网络搜索时使用此工具。例如，查找最新的编程库用法、特定错误代码的解决方案等。
+  `tavily_search_tool(query: str)`: 当你需要查找当前知识库之外的信息、实时信息或进行广泛的网络搜索时使用此工具。
 
+# <<< 核心修改区域：用户交互指南 >>>
 用户交互指南:
-- 当用户询问 shell 命令的用法或示例时，请提供清晰的命令示例和解释。
-- 当用户要求翻译时 (例如英译中)，请直接进行翻译，这不需要特定工具。
-- 对于所有文件操作请求，请仔细分析用户意图，并选择上述合适的文件/目录操作工具来执行。
-- 在调用工具前，请确认路径和参数的正确性。所有路径都应在 './{base_dir.name}/' 沙箱内。
-- 操作完成后，向用户报告操作结果。如果操作失败，请解释原因。
+- **首要原则**: 仔细理解用户意图。区分用户是在进行普通对话，还是在下达需要使用工具的明确指令。
+- **何时直接回答 (不使用工具)**:
+  - 当用户进行问候（如“你好”）、感谢或进行简单的日常对话时，请像一个助手一样用自然语言回复。
+  - 当用户询问你的身份、能力或可用工具（如“你是谁”、“你能做什么”、“你有什么工具”）时，请根据本提示中的信息直接回答，不要调用工具。
+  - 例如，如果用户问“你有什么工具”，你应该回答：“我可用的工具有文件操作类的（如读写、列出、重命名文件等）和网络搜索类的...”，而不是调用`list_files()`。
+- **何时使用工具**:
+  - 仅当用户的请求是一个**明确的、可执行的任务**，且该任务与上述某个工具的功能完全匹配时，才调用工具。
+  - 例如：“创建一个名为'a.txt'的文件”、“列出当前目录下的所有文件”、“搜索一下今天的天气”。
+  - **工具调用格式**: 当你决定使用工具时，你的回复**必须且只能**是一行Python代码，即函数调用本身，例如：`write_file("example.txt", "hello world")`。不要添加任何解释或\`\`\`标记。
+- **操作后报告**: 在工具执行后，你会收到结果。请根据该结果向用户报告操作的成功与否。如果失败，请解释原因。
 """
 
-# --- 任务状态查询端点 ---
-# 任务状态查询端点（简化版本不使用Celery）
-# @app.get("/task/{task_id}")
-# async def get_task_status(task_id: str):
-#     """查询任务状态"""
-#     return {"message": "简化版本不支持任务状态查询"}
+def create_intelligent_agent(proxy_config: Optional[Dict] = None):
+    """创建智能体实例"""
+    return {
+        'proxy_config': proxy_config,
+        'tools': {
+            'read_file': read_file,
+            'list_files': list_files,
+            'write_file': write_file,
+            'create_directory': create_directory,
+            'delete_file': delete_file,
+            'pwd': pwd,
+            'get_system_info': get_system_info,
+            'tavily_search_tool': tavily_search_tool,
+            'rename_file': rename_file,
+            'diff_files': diff_files,
+            'tree': tree,
+            'find_files': find_files,
+            'replace_in_file': replace_in_file,
+            'archive_files': archive_files,
+            'extract_archive': extract_archive,
+            'backup_file': backup_file
+        },
+        'system_prompt': BASE_SYSTEM_PROMPT
+    }
+
+def _call_deepseek_api(prompt: str, proxy_config: Optional[Dict] = None) -> str:
+    """调用DeepSeek API，包含SSL错误处理和重试机制"""
+    if not deepseek_api_key:
+        # 如果没有API Key，模拟一个对话式的回复
+        if "你好" in prompt or "你 好" in prompt:
+             return "你好！有什么可以帮助你的吗？"
+        return "未配置DEEPSEEK_API_KEY，当前为测试模式。"
+
+    endpoint = "https://api.deepseek.com/v1/chat/completions"
+    headers = {'Content-Type': 'application/json', 'Authorization': f'Bearer {deepseek_api_key}'}
+    data = {'model': 'deepseek-chat', 'messages': [{'role': 'user', 'content': prompt}], 'stream': False, 'temperature': 0.1, 'max_tokens': 4000}
+
+    proxy_obj = ProxyConfig(**proxy_config) if proxy_config else None
+
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            # 每次重试都创建新的客户端实例
+            client = create_sync_http_client_with_proxy(proxy_obj)
+
+            with client:
+                response = client.post(endpoint, headers=headers, json=data)
+                response.raise_for_status()
+                result = response.json()
+
+                # 检查响应格式
+                if not result.get('choices'):
+                    raise Exception(f"API响应缺少choices字段: {result}")
+
+                if not isinstance(result['choices'], list) or len(result['choices']) == 0:
+                    raise Exception(f"API响应choices字段格式错误: {result['choices']}")
+
+                first_choice = result['choices'][0]
+                if not first_choice.get('message'):
+                    raise Exception(f"API响应缺少message字段: {first_choice}")
+
+                message_content = first_choice['message'].get('content')
+                if not message_content:
+                    raise Exception(f"API响应message内容为空: {first_choice['message']}")
+
+                return message_content
+
+        except httpx.ConnectError as e:
+            if "SSL" in str(e) or "EOF" in str(e):
+                logger.warning(f"SSL连接错误 (尝试 {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    import time
+                    time.sleep(2 ** attempt)  # 指数退避
+                    continue
+                else:
+                    return f"SSL连接失败: {str(e)}。建议检查网络连接或配置代理。"
+            else:
+                return f"连接错误: {str(e)}"
+
+        except httpx.TimeoutException as e:
+            logger.warning(f"请求超时 (尝试 {attempt + 1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                import time
+                time.sleep(1)
+                continue
+            else:
+                return f"请求超时: {str(e)}"
+
+        except httpx.HTTPStatusError as e:
+            return f"HTTP错误 {e.response.status_code}: {e.response.text}"
+
+        except Exception as e:
+            logger.error(f"调用DeepSeek API时发生未知错误: {e}")
+            if attempt < max_retries - 1:
+                import time
+                time.sleep(1)
+                continue
+            else:
+                return f"API调用失败: {str(e)}"
+    return "API调用失败: 超过最大重试次数"
+
+def _process_tool_calls(response: str, tools: Dict[str, Any]) -> str:
+    """
+    【已实现】处理AI响应中可能包含的工具调用。
+    解析并执行形如 `function_name(arg1, "arg2", ...)` 的调用。
+    """
+    response = response.strip()
+    # 移除可能的Markdown代码块标记
+    if response.startswith("```") and response.endswith("```"):
+        response = response.strip("`\n")
+        if response.startswith("python"):
+            response = response[6:].strip()
+
+    # 使用更健壮的正则表达式来匹配函数调用
+    match = re.fullmatch(r"^\s*(\w+)\((.*)\)\s*$", response, re.DOTALL)
+    if not match:
+        # 如果不匹配工具调用格式，直接返回AI的自然语言响应
+        return response
+
+    tool_name = match.group(1)
+    args_str = match.group(2)
+
+    if tool_name not in tools:
+        # 如果AI幻觉出一个不存在的工具，我们不应该执行它，而是返回原始响应
+        logger.warning(f"AI试图调用一个不存在的工具: {tool_name}。返回原始文本。")
+        return response
+
+    try:
+        # 使用ast.literal_eval安全地解析参数
+        # 尝试解析为关键字参数
+        parsed_args = ()
+        parsed_kwargs = {}
+        if args_str.strip(): # 确保参数字符串不为空
+            try:
+                # 尝试同时解析位置和关键字参数
+                # 为了安全，我们用ast.parse来解析一个函数调用表达式
+                tree = ast.parse(f"f({args_str})", mode='eval')
+                call_node = tree.body
+                
+                # 解析位置参数
+                parsed_args = [ast.literal_eval(arg) for arg in call_node.args]
+
+                # 解析关键字参数
+                parsed_kwargs = {kw.arg: ast.literal_eval(kw.value) for kw in call_node.keywords}
+
+            except (ValueError, SyntaxError, TypeError) as e:
+                 logger.error(f"使用AST解析参数 '{args_str}' 失败: {e}。将作为普通文本处理。")
+                 return response # 参数解析失败，返回原始AI响应
+
+        logger.info(f"执行工具调用: {tool_name} with args={parsed_args}, kwargs={parsed_kwargs}")
+        tool_function = tools[tool_name]
+        result = tool_function(*parsed_args, **parsed_kwargs)
+        
+        # 对列表结果进行格式化
+        if isinstance(result, list):
+            return "\n".join(map(str, result)) #确保所有项都是字符串
+        return str(result)
+
+    except Exception as e:
+        logger.error(f"解析或执行工具 '{tool_name}' 时出错: {e}")
+        return f"错误：执行工具 '{tool_name}' 失败。原因: {e}"
+
+def run_agent_with_tools(agent: Dict, message: str) -> str:
+    """
+    【已修改】运行智能体处理消息。
+    移除了硬编码的关键字匹配，让所有请求都由AI模型处理。
+    """
+    if not agent:
+        return "智能体未初始化，请检查配置。"
+    try:
+        full_prompt = f"{agent['system_prompt']}\n\n用户: {message}\n\n助手: "
+        
+        # 1. 让AI决定是直接回答还是调用工具
+        ai_response = _call_deepseek_api(full_prompt, agent.get('proxy_config'))
+        
+        # 2. 处理AI的响应，如果响应是工具调用，则执行它；否则直接返回
+        final_response = _process_tool_calls(ai_response, agent['tools'])
+        
+        return final_response
+
+    except Exception as e:
+        logger.error(f"智能体处理失败: {e}", exc_info=True)
+        return f"智能体处理失败: {str(e)}"
+
+# --- 任务状态查询端点 (简化) ---
+# @app.get("/task/{task_id}") ...
 
 # --- FastAPI 路由 ---
-
 @app.get("/health")
 async def health_check():
     """健康检查端点"""
-    try:
-        # 检查Redis连接
-        if redis_pool:
+    redis_status = "disabled"
+    if REDIS_AVAILABLE and redis_pool:
+        try:
             redis_client = redis.Redis(connection_pool=redis_pool)
             await redis_client.ping()
             redis_status = "healthy"
-        else:
-            redis_status = "disconnected"
-
-        # 检查Celery Worker（简化版本不使用）
-        celery_status = "disabled"
-
-        return {
-            "status": "healthy",
-            "version": "2.0.0",
+        except Exception:
+            redis_status = "error"
+    
+    return {
+        "status": "healthy",
+        "version": app.version, # 使用app.version
+        "features": {
             "redis": redis_status,
-            "celery": celery_status,
-            "websocket_connections": len(manager.active_connections)
-        }
-    except Exception as e:
-        logger.error(f"健康检查失败: {e}")
-        raise HTTPException(status_code=500, detail="Service unhealthy")
+            "intelligent_agent": "enabled",
+            "file_operations": "enabled",
+            "network_search": "enabled" if tavily_api_key else "disabled",
+            "ai_api": "enabled" if deepseek_api_key else "disabled"
+        },
+        "websocket_connections": len(manager.active_connections)
+    }
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """WebSocket端点，处理实时通信"""
-    channel_id = None
+    channel_id = await manager.connect(websocket)
     try:
-        # 建立连接
-        channel_id = await manager.connect(websocket)
-
-        # 发送连接确认
         await manager.send_personal_message({
             "type": "connection",
-            "data": {
-                "status": "connected",
-                "channel_id": channel_id,
-                "message": "WebSocket连接已建立"
-            },
+            "data": {"status": "connected", "channel_id": channel_id},
             "timestamp": datetime.datetime.now().isoformat()
         }, channel_id)
 
-        # 监听消息
         while True:
-            try:
-                # 接收消息
-                data = await websocket.receive_json()
+            data = await websocket.receive_json()
+            if not isinstance(data, dict) or 'type' not in data:
+                await manager.send_personal_message({"type": "error", "data": {"message": "无效的消息格式"}}, channel_id)
+                continue
 
-                # 验证消息格式
-                if not isinstance(data, dict) or 'type' not in data:
-                    await manager.send_personal_message({
-                        "type": "error",
-                        "data": {"message": "无效的消息格式"},
-                        "timestamp": datetime.datetime.now().isoformat()
-                    }, channel_id)
-                    continue
+            message_type = data.get('type')
+            if message_type == 'chat':
+                await handle_chat_message(data, channel_id)
+            elif message_type == 'ping':
+                await manager.send_personal_message({"type": "pong"}, channel_id)
+            else:
+                await manager.send_personal_message({"type": "error", "data": {"message": f"不支持的消息类型: {message_type}"}}, channel_id)
 
-                message_type = data.get('type')
-
-                if message_type == 'chat':
-                    # 处理聊天消息
-                    await handle_chat_message(data, channel_id)
-                elif message_type == 'ping':
-                    # 处理心跳
-                    await manager.send_personal_message({
-                        "type": "pong",
-                        "data": {"timestamp": datetime.datetime.now().isoformat()},
-                        "timestamp": datetime.datetime.now().isoformat()
-                    }, channel_id)
-                else:
-                    await manager.send_personal_message({
-                        "type": "error",
-                        "data": {"message": f"不支持的消息类型: {message_type}"},
-                        "timestamp": datetime.datetime.now().isoformat()
-                    }, channel_id)
-
-            except WebSocketDisconnect:
-                break
-            except Exception as e:
-                logger.error(f"WebSocket消息处理错误: {e}")
-                await manager.send_personal_message({
-                    "type": "error",
-                    "data": {"message": f"消息处理失败: {str(e)}"},
-                    "timestamp": datetime.datetime.now().isoformat()
-                }, channel_id)
-
+    except WebSocketDisconnect:
+        logger.info(f"WebSocket {channel_id} 断开连接")
     except Exception as e:
-        logger.error(f"WebSocket连接错误: {e}")
+        logger.error(f"WebSocket {channel_id} 错误: {e}")
     finally:
         if channel_id:
             manager.disconnect(channel_id)
@@ -885,89 +1099,41 @@ async def websocket_endpoint(websocket: WebSocket):
 async def handle_chat_message(data: dict, channel_id: str):
     """处理聊天消息"""
     try:
-        # 解析聊天请求
         chat_data = data.get('data', {})
         message = chat_data.get('message', '').strip()
-
         if not message:
-            await manager.send_personal_message({
-                "type": "error",
-                "data": {"message": "消息内容不能为空"},
-                "timestamp": datetime.datetime.now().isoformat()
-            }, channel_id)
+            await manager.send_personal_message({"type": "error", "data": {"message": "消息内容不能为空"}}, channel_id)
             return
 
-        # 发送处理状态
-        await manager.send_personal_message({
-            "type": "status",
-            "data": {
-                "status": "processing",
-                "message": "正在处理您的请求..."
-            },
-            "timestamp": datetime.datetime.now().isoformat()
-        }, channel_id)
+        await manager.send_personal_message({"type": "status", "data": {"status": "processing"}}, channel_id)
 
-        # 构建任务数据
         task_data = {
             "message": message,
-            "channel_id": channel_id,
-            "user_id": chat_data.get('user_id'),
             "proxy_config": chat_data.get('proxy_config'),
-            "api_config": chat_data.get('api_config')
         }
 
-        # 直接处理任务（简化版本，不使用Celery）
-        try:
-            from agent_tools import create_intelligent_agent, run_agent_with_tools
+        agent = create_intelligent_agent(task_data.get('proxy_config'))
+        response = run_agent_with_tools(agent, message)
 
-            # 创建智能体
-            agent = create_intelligent_agent(task_data.get('proxy_config'))
-
-            # 处理消息
-            response = run_agent_with_tools(agent, message)
-
-            # 发送结果
-            await manager.send_personal_message({
-                "type": "result",
-                "data": {
-                    "response": response,
-                    "success": True
-                },
-                "timestamp": datetime.datetime.now().isoformat()
-            }, channel_id)
-
-            logger.info(f"消息处理完成，频道: {channel_id}")
-
-        except Exception as e:
-            logger.error(f"处理消息失败: {e}")
-            await manager.send_personal_message({
-                "type": "error",
-                "data": {"message": f"处理失败: {str(e)}"},
-                "timestamp": datetime.datetime.now().isoformat()
-            }, channel_id)
-
-    except Exception as e:
-        logger.error(f"处理聊天消息失败: {e}")
         await manager.send_personal_message({
-            "type": "error",
-            "data": {"message": f"处理失败: {str(e)}"},
+            "type": "result",
+            "data": {"response": response, "success": True},
             "timestamp": datetime.datetime.now().isoformat()
         }, channel_id)
+
+    except Exception as e:
+        logger.error(f"处理聊天消息失败: {e}", exc_info=True)
+        await manager.send_personal_message({"type": "error", "data": {"message": f"处理失败: {str(e)}"}}, channel_id)
 
 @app.post("/chat", response_model=ChatResponse, responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}})
 async def chat(request: ChatRequest) -> ChatResponse:
-    """
-    聊天API端点 (兼容性接口)
-
-    为了向后兼容，保留HTTP接口。建议使用WebSocket接口获得更好的实时体验。
-    """
+    """聊天API端点 (兼容性接口)"""
     user_message = request.message
     proxy_config = request.proxyConfig
 
     if not user_message.strip():
         raise HTTPException(status_code=400, detail="消息内容不能为空")
 
-    # 验证代理配置
     if proxy_config:
         is_valid, error_msg = validate_proxy_config(proxy_config)
         if not is_valid:
@@ -975,113 +1141,40 @@ async def chat(request: ChatRequest) -> ChatResponse:
 
     try:
         logger.info(f"HTTP聊天请求: {user_message}")
-
-        # 构建任务数据
-        task_data = {
-            "message": user_message,
-            "channel_id": f"http_{uuid.uuid4()}",  # 为HTTP请求生成临时频道ID
-            "proxy_config": proxy_config.model_dump() if proxy_config else None,
-            "api_config": None
-        }
-
-        # 直接处理任务（简化版本）
-        try:
-            from agent_tools import create_intelligent_agent, run_agent_with_tools
-
-            # 创建智能体
-            agent = create_intelligent_agent(task_data.get('proxy_config'))
-
-            # 处理消息
-            response = run_agent_with_tools(agent, user_message)
-
-            return ChatResponse(response=response)
-
-        except Exception as e:
-            logger.error(f"处理失败: {e}")
-            # 如果处理失败，返回简单的测试响应
-            proxy_info = ""
-            if proxy_config and proxy_config.enabled:
-                proxy_info = f" (代理: {proxy_config.type}://{proxy_config.host}:{proxy_config.port})"
-
-            fallback_response = f"Chrome Plus V2.0 智能体响应：收到消息 '{user_message}'。{proxy_info}\n\n" \
-                              f"注意：智能体处理失败，错误: {str(e)}"
-
-            return ChatResponse(response=fallback_response)
-
+        proxy_config_dict = proxy_config.model_dump() if proxy_config else None
+        agent = create_intelligent_agent(proxy_config_dict)
+        response = run_agent_with_tools(agent, user_message)
+        return ChatResponse(response=response)
     except Exception as e:
-        logger.error(f"HTTP聊天处理失败: {e}")
+        logger.error(f"HTTP聊天处理失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"处理请求失败: {e}")
 
 @app.post("/test-proxy", responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}})
 async def test_proxy_endpoint(proxy_config: ProxyConfig):
-    """
-    测试代理连接端点
-
-    测试指定的代理配置是否可用。
-    """
+    """测试代理连接端点"""
+    is_valid, error_msg = validate_proxy_config(proxy_config)
+    if not is_valid:
+        raise HTTPException(status_code=400, detail=f"代理配置无效: {error_msg}")
     try:
-        # 验证代理配置
-        is_valid, error_msg = validate_proxy_config(proxy_config)
-        if not is_valid:
-            raise HTTPException(status_code=400, detail=f"代理配置无效: {error_msg}")
-
-        # 测试代理连接
         success, message = await test_proxy_connection(proxy_config)
-
-        return {
-            "success": success,
-            "message": message,
-            "proxy_info": f"{proxy_config.type}://{proxy_config.host}:{proxy_config.port}"
-        }
-
-    except HTTPException:
-        raise
+        return {"success": success, "message": message}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"代理测试失败: {str(e)}")
 
 def main():
     """主函数 - 启动FastAPI服务"""
     logger.info("Chrome Plus V2.0 后端服务启动中...")
-
-    # 确保基础目录存在
-    if not base_dir.exists():
-        logger.info(f"创建沙箱目录: {base_dir}")
-        try:
-            base_dir.mkdir(parents=True, exist_ok=True)
-        except Exception as e:
-            logger.error(f"无法创建基础目录 {base_dir}: {e}")
-            exit(1)
-
-    # 启动FastAPI服务
+    os.makedirs(base_dir, exist_ok=True)
+    
     import uvicorn
-
-    # 根据环境选择配置
-    if ENVIRONMENT == 'development':
-        uvicorn.run(
-            "main:app",
-            host="127.0.0.1",
-            port=5001,
-            log_level="info",
-            reload=True,
-            reload_dirs=["./"]
-        )
-    else:
-        uvicorn.run(
-            app,
-            host="0.0.0.0",
-            port=5001,
-            log_level="info"
-        )
+    host = "127.0.0.1" if ENVIRONMENT == 'development' else "0.0.0.0"
+    uvicorn.run(
+        "__main__:app",
+        host=host,
+        port=5001,
+        log_level="info",
+        reload=(ENVIRONMENT == 'development')
+    )
 
 if __name__ == "__main__":
-    if not base_dir.exists():
-        print(f"提示：正在创建脚本所需的基础测试目录: {base_dir}")
-        try:
-            base_dir.mkdir(parents=True, exist_ok=True)
-        except Exception as e:
-            print(f"错误：无法创建基础目录 {base_dir}：{e}。程序可能无法正常工作。")
-            exit(1) # Exit if base dir cannot be created
-
-    # 启动FastAPI服务
-    import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=5001, log_level="info")
+    main()

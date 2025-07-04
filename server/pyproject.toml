@@ -1,6 +1,6 @@
 [project]
 name = "chrome-plus-server"
-version = "2.0.0"
+version = "2.1.0"
 description = "Chrome Plus AI Assistant - Backend Server with WebSocket and Celery support"
 readme = "README.md"
 requires-python = ">=3.10"

@@ -30,7 +30,7 @@ requests-toolbelt==1.0.0
 urllib3==2.4.0
 
 uvicorn==0.34.2
-starlette==0.46.2
+starlette==0.41.3
 sse-starlette==2.3.4
 
 tornado==6.5.1
@@ -51,6 +51,5 @@ tqdm==4.67.1
 typing-extensions>=4.11,<5
 zipp==3.18.2
 fastapi==0.115.6
-pydantic==2.11.4
 redis==5.0.1
 celery==5.3.4

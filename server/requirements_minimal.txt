@@ -1,0 +1,16 @@
+# Chrome Plus V2.0 - 最小依赖包
+# 核心依赖
+fastapi>=0.100.0
+uvicorn>=0.20.0
+python-dotenv>=1.0.0
+httpx>=0.24.0
+pydantic>=2.0.0
+
+# 系统工具
+psutil>=5.9.0
+
+# Redis支持（可选）
+redis>=4.0.0
+
+# WebSocket支持
+websockets>=11.0.0

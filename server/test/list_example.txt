@@ -1,0 +1,7 @@
+fruits = ['apple', 'banana', 'orange']
+numbers = [1, 2, 3, 4, 5]
+
+# 列表操作示例
+print(fruits[0])  # 输出第一个元素
+fruits.append('grape')  # 添加元素
+print(len(numbers))  # 获取列表长度

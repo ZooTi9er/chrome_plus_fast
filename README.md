@@ -1,6 +1,6 @@
-# Chrome Plus V2.0 Fast 🚀
+# Chrome Plus V2.1 Fast 🚀
 
-[![Chrome Extension](https://img.shields.io/badge/Chrome-Extension-V2.0-blue?logo=google-chrome)](https://chrome.google.com/webstore)
+[![Chrome Extension](https://img.shields.io/badge/Chrome-Extension-V2.1-blue?logo=google-chrome)](https://chrome.google.com/webstore)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-green?logo=fastapi)](https://fastapi.tiangolo.com/)
 [![WebSocket](https://img.shields.io/badge/WebSocket-Real--time-orange?logo=websocket)](https://websockets.spec.whatwg.org/)
 [![AI Agent](https://img.shields.io/badge/AI-Agent-purple?logo=openai)](https://openai.com/)
@@ -8,13 +8,13 @@
 [![Python](https://img.shields.io/badge/Python-3.9+-blue?logo=python)](https://python.org)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Chrome Plus V2.0 Fast** - 快速部署的智能AI助手Chrome扩展，集成**文件操作工具**、**网络搜索**和**实时通信**。基于Chrome Manifest V3、FastAPI和智能体架构的轻量化解决方案。
+**Chrome Plus V2.1 Fast** - 快速部署的智能AI助手Chrome扩展，集成**文件操作工具**、**网络搜索**和**实时通信**。基于Chrome Manifest V3、FastAPI和智能体架构的轻量化解决方案。
 
-![Chrome Plus V2.0 演示](images/demo-screenshot.png)
+![Chrome Plus V2.1 演示](images/demo-screenshot.png)
 
-> 🎉 **重大升级！** V2.0版本带来了全新的实时通信体验和强大的异步处理能力！
+> 🎉 **稳定版发布！** V2.1稳定版带来了更可靠的实时通信体验和强大的异步处理能力！
 
-## ✨ V2.0 核心特性
+## ✨ V2.1 核心特性
 
 ### 🚀 **全新架构升级**
 - **⚡ WebSocket实时通信**: 双向实时消息传输，告别HTTP轮询
@@ -45,7 +45,7 @@
 - **🔄 自动降级**: WebSocket失败时自动切换到HTTP模式
 - **💪 容错机制**: 服务异常时的优雅处理
 
-### 🚀 **V2.0技术亮点**
+### 🚀 **V2.1技术亮点**
 - **Chrome Manifest V3**: 最新扩展标准
 - **WebSocket实时通信**: 双向实时数据传输
 - **Celery分布式任务**: 异步任务处理和调度
@@ -53,7 +53,7 @@
 - **Docker容器化**: 一键部署和扩展
 - **微服务架构**: 可扩展的服务设计
 
-## 🎬 V2.0 快速开始
+## 🎬 V2.1 快速开始
 
 ### 🚀 一键启动 (推荐)
 ```bash
@@ -63,7 +63,7 @@ git clone <repository-url> && cd chrome_plus
 # 2. 快速验证
 python3 quick_test.py
 
-# 3. 一键启动V2.0服务
+# 3. 一键启动V2.1服务
 ./start-v2.sh
 
 # 4. 在Chrome中加载扩展
@@ -112,7 +112,7 @@ cp server/.env.example server/.env
 - 🧪 测试策略和代码贡献规范
 - 🔧 FastAPI迁移说明和技术债务
 
-## 🛠️ V2.0 技术栈
+## 🛠️ V2.1 技术栈
 
 ### 🌐 前端 (Chrome扩展)
 - **Chrome Extension API**: Manifest V3
@@ -145,11 +145,11 @@ cp server/.env.example server/.env
 - **流式响应**: 实时对话体验
 - **代理支持**: HTTP/SOCKS5代理
 
-## 📦 V2.0 项目结构
+## 📦 V2.1 项目结构
 
 ```
 chrome_plus/
-├── 📄 manifest.json              # Chrome扩展配置 (V2.0)
+├── 📄 manifest.json              # Chrome扩展配置 (V2.1)
 ├── 🎨 sidepanel.html             # 主界面
 ├── 💅 sidepanel.css              # 样式文件
 ├── ⚙️ background.js              # 后台服务
@@ -161,7 +161,7 @@ chrome_plus/
 │   ├── docker-dev.sh             # Docker开发脚本
 │   └── build-extension.sh        # 扩展打包
 ├── 🐳 docker-compose.yml         # 服务编排配置 (NEW!)
-├── 🚀 start-v2.sh                # V2.0启动脚本 (NEW!)
+├── 🚀 start-v2.sh                # V2.1启动脚本 (NEW!)
 ├── 🧪 quick_test.py              # 快速验证脚本 (NEW!)
 ├── 🧪 test_chrome_plus_v2.py     # 综合测试脚本 (NEW!)
 ├── 📚 UPGRADE_COMPLETE.md        # 升级完成文档 (NEW!)
@@ -175,7 +175,7 @@ chrome_plus/
     └── test/                     # 沙箱目录
 ```
 
-## 🚀 V2.0 安装指南
+## 🚀 V2.1 安装指南
 
 ### 📋 前置要求
 - **Chrome 88+**: 支持Manifest V3
@@ -196,7 +196,7 @@ chrome_plus/
    python3 quick_test.py
    ```
 
-3. **一键启动V2.0**
+3. **一键启动V2.1**
    ```bash
    ./start-v2.sh
    ```
@@ -251,7 +251,7 @@ docker-compose up -d --build
 
 详细安装和配置指南请参考 [用户手册](docs/USER_MANUAL.md)。
 
-## 🎯 V2.0 使用方法
+## 🎯 V2.1 使用方法
 
 ### 🚀 实时对话体验
 1. 点击Chrome工具栏中的扩展图标
@@ -282,7 +282,7 @@ docker-compose up -d --build
 4. 测试代理连接
 5. 享受无地域限制的AI服务
 
-## 🧪 V2.0 测试套件
+## 🧪 V2.1 测试套件
 
 ### 🚀 快速验证
 ```bash
@@ -324,11 +324,11 @@ wscat -c ws://localhost:5001/ws
 {"type": "chat", "data": {"message": "Hello WebSocket!"}}
 ```
 
-## 📦 V2.0 构建和部署
+## 📦 V2.1 构建和部署
 
 ### 🚀 开发环境
 ```bash
-# V2.0一键启动
+# V2.1一键启动
 ./start-v2.sh
 
 # 传统方式
@@ -345,9 +345,9 @@ docker-compose -f docker-compose.prod.yml up -d
 ```
 
 ### 📱 Chrome Web Store发布
-1. 运行 `./scripts/build-extension.sh` 生成V2.0扩展包
+1. 运行 `./scripts/build-extension.sh` 生成V2.1扩展包
 2. 访问 [Chrome开发者控制台](https://chrome.google.com/webstore/devconsole)
-3. 上传zip包，强调V2.0新特性
+3. 上传zip包，强调V2.1稳定版特性
 4. 提交审核
 
 ### 🔧 服务器部署
@@ -383,7 +383,7 @@ docker-compose -f docker-compose.prod.yml up -d
 
 本项目采用 MIT 许可证 - 查看 [LICENSE](LICENSE) 文件了解详情。
 
-## 🙏 V2.0 致谢
+## 🙏 V2.1 致谢
 
 ### 🏗️ 核心技术
 - [Chrome Extensions](https://developer.chrome.com/docs/extensions/) - 扩展开发平台
@@ -410,7 +410,7 @@ docker-compose -f docker-compose.prod.yml up -d
 
 ## 🌟 Star History
 
-如果Chrome Plus V2.0对您有帮助，请给我们一个 ⭐️！
+如果Chrome Plus V2.1稳定版对您有帮助，请给我们一个 ⭐️！
 
 [![Star History Chart](https://api.star-history.com/svg?repos=your-username/chrome_plus&type=Date)](https://star-history.com/#your-username/chrome_plus&Date)
 
@@ -418,7 +418,7 @@ docker-compose -f docker-compose.prod.yml up -d
 
 <div align="center">
 
-**🚀 体验Chrome Plus V2.0，享受下一代AI助手的强大功能！**
+**🚀 体验Chrome Plus V2.1稳定版，享受下一代AI助手的强大功能！**
 
 [📖 用户手册](docs/USER_MANUAL.md) • [🛠️ 开发者文档](docs/DEVELOPMENT_GUIDE.md) • [🎉 升级指南](UPGRADE_COMPLETE.md) • [🐛 问题反馈](https://github.com/your-repo/issues)
 
