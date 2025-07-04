@@ -1,6 +1,6 @@
-# Chrome Plus V2.1 Fast 🚀
+# Chrome Plus V2.1.1 Fast 🚀
 
-[![Chrome Extension](https://img.shields.io/badge/Chrome-Extension-V2.1-blue?logo=google-chrome)](https://chrome.google.com/webstore)
+[![Chrome Extension](https://img.shields.io/badge/Chrome-Extension-V2.1.1-blue?logo=google-chrome)](https://chrome.google.com/webstore)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-green?logo=fastapi)](https://fastapi.tiangolo.com/)
 [![WebSocket](https://img.shields.io/badge/WebSocket-Real--time-orange?logo=websocket)](https://websockets.spec.whatwg.org/)
 [![AI Agent](https://img.shields.io/badge/AI-Agent-purple?logo=openai)](https://openai.com/)
@@ -8,13 +8,13 @@
 [![Python](https://img.shields.io/badge/Python-3.9+-blue?logo=python)](https://python.org)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Chrome Plus V2.1 Fast** - 快速部署的智能AI助手Chrome扩展，集成**文件操作工具**、**网络搜索**和**实时通信**。基于Chrome Manifest V3、FastAPI和智能体架构的轻量化解决方案。
+**Chrome Plus V2.1.1 Fast** - 快速部署的智能AI助手Chrome扩展，集成**文件操作工具**、**网络搜索**和**实时通信**。基于Chrome Manifest V3、FastAPI和智能体架构的轻量化解决方案。
 
-![Chrome Plus V2.1 演示](images/demo-screenshot.png)
+![Chrome Plus V2.1.1 演示](images/demo-screenshot.png)
 
-> 🎉 **稳定版发布！** V2.1稳定版带来了更可靠的实时通信体验和强大的异步处理能力！
+> 🎉 **最新版本！** V2.1.1带来了更可靠的实时通信体验和强大的异步处理能力！
 
-## ✨ V2.1 核心特性
+## ✨ V2.1.1 核心特性
 
 ### 🚀 **全新架构升级**
 - **⚡ WebSocket实时通信**: 双向实时消息传输，告别HTTP轮询

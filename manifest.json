@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Chrome Plus V2.1",
-  "version": "2.1.0",
-  "description": "Chrome Plus V2.1 - 智能AI助手扩展，支持WebSocket实时通信、异步任务处理、多种AI模型，提供便捷的侧边栏聊天界面，支持Markdown渲染和代码高亮。",
+  "name": "Chrome Plus V2.1.1",
+  "version": "2.1.1",
+  "description": "Chrome Plus V2.1.1 - 智能AI助手扩展，支持WebSocket实时通信、异步任务处理、多种AI模型，提供便捷的侧边栏聊天界面，支持Markdown渲染和代码高亮。",
   "icons": {
     "16": "images/icon-16.png",
     "48": "images/icon-48.png",
@@ -23,7 +23,7 @@
     "default_path": "sidepanel.html"
   },
   "action": {
-    "default_title": "打开Chrome Plus V2.0"
+    "default_title": "打开Chrome Plus V2.1.1"
   },
   "background": {
     "service_worker": "background.js"

@@ -1,7 +1,8 @@
-// api.js - Chrome Plus V2.0 API客户端
+// api.js - Chrome Plus V2.1.1 API客户端
 // 支持WebSocket实时通信和HTTP降级
 
-const API_BASE_URL = 'http://localhost:5001';
+// 使用配置文件中的服务器地址
+const API_BASE_URL = CONFIG?.SERVER?.HTTP_URL || 'http://localhost:5001';
 
 // 通信模式配置
 let USE_WEBSOCKET = true; // 默认使用WebSocket

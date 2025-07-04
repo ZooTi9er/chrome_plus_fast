@@ -29,7 +29,7 @@ class WebSocketAPIClient {
         }
 
         try {
-            const wsUrl = 'ws://localhost:5001/ws';
+            const wsUrl = CONFIG?.SERVER?.WS_URL || 'ws://localhost:5001/ws';
             console.log('正在连接WebSocket:', wsUrl);
             
             this.ws = new WebSocket(wsUrl);

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Chrome Plus V2.0 - 后端服务
+Chrome Plus V2.1.1 - 后端服务
 支持WebSocket实时通信、Celery异步任务处理和Redis消息队列
 """
 
@@ -1167,11 +1167,11 @@ def main():
     os.makedirs(base_dir, exist_ok=True)
     
     import uvicorn
-    host = "127.0.0.1" if ENVIRONMENT == 'development' else "0.0.0.0"
+    from config import settings
     uvicorn.run(
         "__main__:app",
-        host=host,
-        port=5001,
+        host=settings.HOST,
+        port=settings.PORT,
         log_level="info",
         reload=(ENVIRONMENT == 'development')
     )

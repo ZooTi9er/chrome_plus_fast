@@ -10,9 +10,9 @@ from typing import List
 
 class Settings:
     """应用设置"""
-    
+
     # 服务器配置
-    HOST: str = "127.0.0.1"
+    HOST: str = os.getenv("SERVER_HOST", "127.0.0.1")
     PORT: int = 5001
     DEBUG: bool = True
     

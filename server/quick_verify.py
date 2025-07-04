@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-快速验证增强版 main.py 的功能完整性
-检查所有必要的函数和配置是否正确集成
+Chrome Plus V2.1.1 快速验证脚本
+验证核心功能是否正常工作
 """
 
 import sys
@@ -99,7 +99,7 @@ def main():
         "create_intelligent_agent",
         "run_agent_with_tools",
         "_call_deepseek_api",
-        "_build_proxy_url",
+        "_get_proxy_url",
         "_process_tool_calls"
     ]
 
@@ -111,7 +111,7 @@ def main():
     # 检查代理相关函数
     print("\n🌐 检查代理相关函数...")
     proxy_functions = [
-        "create_http_client_with_proxy",
+        "create_async_http_client_with_proxy",
         "test_proxy_connection",
         "validate_proxy_config"
     ]
