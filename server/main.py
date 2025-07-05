@@ -400,9 +400,9 @@ class ChatWebSocketRequest(BaseModel):
 
 # --- FastAPI 应用实例 ---
 app = FastAPI(
-    title="Chrome Plus V2.0 API（增强版）",
+    title="Chrome Plus V2.1.1 API",
     description="AI智能体API，支持WebSocket实时通信、Redis消息队列、文件操作和网络搜索",
-    version="2.0.2-fixed", # Version updated
+    version="2.1.1",
     lifespan=lifespan
 )
 
