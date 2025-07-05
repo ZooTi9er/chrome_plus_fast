@@ -527,9 +527,10 @@ celery_app.conf.update(
 - **Tavily API**: 网络搜索服务，实时信息检索
 
 **智能代理工具：**
-- **15种文件操作工具**: 读写创建删除重命名等
+- **18种文件操作工具**: 读写创建删除重命名等，新增文件夹管理功能
 - **网络搜索工具**: Tavily API集成
 - **系统信息工具**: 获取主机和系统状态
+- **文件夹管理工具**：可视化文件夹浏览、创建、删除、重命名
 
 #### 🛠️ 系统工具和依赖
 
@@ -913,6 +914,100 @@ class ChatResponse(BaseModel):
 {
     "success": true,
     "message": "代理连接测试成功"
+}
+```
+
+#### 5.1.4 文件夹管理API端点
+
+**获取文件夹树**: `GET /api/folders/tree`
+
+**查询参数**:
+- `path` (string, 可选): 目标路径，默认为 "."
+- `max_depth` (int, 可选): 最大深度，默认为 3
+
+**响应模型**:
+```python
+class FolderNode(BaseModel):
+    name: str
+    path: str
+    type: str  # "file" or "folder"
+    size: Optional[int] = None
+    modified: Optional[str] = None
+    children: Optional[List['FolderNode']] = None
+    expanded: bool = False
+
+class FolderTreeResponse(BaseModel):
+    tree: FolderNode
+    total_files: int
+    total_folders: int
+```
+
+**响应示例**:
+```json
+{
+    "tree": {
+        "name": "test",
+        "path": "",
+        "type": "folder",
+        "modified": "2025-01-04 10:30:00",
+        "expanded": false,
+        "children": [
+            {
+                "name": "hello.txt",
+                "path": "hello.txt",
+                "type": "file",
+                "size": 13,
+                "modified": "2025-01-04 10:30:00"
+            }
+        ]
+    },
+    "total_files": 1,
+    "total_folders": 0
+}
+```
+
+**创建文件夹**: `POST /api/folders/create`
+
+**请求模型**:
+```python
+class FolderCreateRequest(BaseModel):
+    path: str
+    name: str
+```
+
+**删除文件夹**: `DELETE /api/folders/delete`
+
+**请求模型**:
+```python
+class FolderDeleteRequest(BaseModel):
+    path: str
+```
+
+**重命名文件夹**: `POST /api/folders/rename`
+
+**请求模型**:
+```python
+class FolderRenameRequest(BaseModel):
+    old_path: str
+    new_name: str
+```
+
+**获取文件夹信息**: `GET /api/folders/info`
+
+**查询参数**:
+- `path` (string): 文件夹路径
+
+**响应示例**:
+```json
+{
+    "name": "documents",
+    "path": "documents",
+    "type": "folder",
+    "modified": "2025-01-04 09:15:00",
+    "created": "2025-01-04 08:00:00",
+    "total_size": 47104,
+    "file_count": 2,
+    "folder_count": 1
 }
 ```
 

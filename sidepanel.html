@@ -13,19 +13,58 @@
   <script src="lib/highlight/highlight.min.js"></script>
 </head>
 <body>
-  <div id="chat-container">
-    <div class="header">
-      <h1>AI助手</h1>
+  <div id="main-container">
+    <!-- 主标签页导航 -->
+    <div class="main-tabs">
+      <button class="main-tab-button active" data-tab="chat">💬 AI助手</button>
+      <button class="main-tab-button" data-tab="files">📁 文件管理</button>
       <div class="header-buttons">
         <button id="settings-button" title="设置">⚙️</button>
       </div>
     </div>
-    <div id="chat-box">
-      <!-- Messages will be appended here -->
+
+    <!-- AI助手标签页 -->
+    <div id="chat-tab" class="main-tab-content active">
+      <div id="chat-container">
+        <div id="chat-box">
+          <!-- Messages will be appended here -->
+        </div>
+        <div id="input-container">
+          <input type="text" id="message-input" placeholder="输入你的消息...">
+          <button id="send-button">发送</button>
+        </div>
+      </div>
     </div>
-    <div id="input-container">
-      <input type="text" id="message-input" placeholder="输入你的消息...">
-      <button id="send-button">发送</button>
+
+    <!-- 文件管理标签页 -->
+    <div id="files-tab" class="main-tab-content">
+      <div id="file-manager">
+        <div class="file-manager-header">
+          <div class="file-manager-toolbar">
+            <button id="refresh-tree" title="刷新">🔄</button>
+            <button id="create-folder" title="新建文件夹">📁+</button>
+            <button id="upload-file" title="上传文件">📤</button>
+            <span class="file-path" id="current-path">./</span>
+          </div>
+        </div>
+
+        <div class="file-manager-content">
+          <!-- 文件夹树状结构 -->
+          <div id="folder-tree" class="folder-tree">
+            <div class="loading">加载中...</div>
+          </div>
+
+          <!-- 文件详情面板 -->
+          <div id="file-details" class="file-details">
+            <div class="details-header">
+              <h3>文件详情</h3>
+            </div>
+            <div class="details-content">
+              <p>选择一个文件或文件夹查看详情</p>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -153,9 +192,39 @@
       </div>
     </div>
   </div>
-  <!-- Chrome Plus V2.0 脚本 -->
+
+  <!-- 文件夹操作模态框 -->
+  <div id="folder-modal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 id="folder-modal-title">文件夹操作</h2>
+        <span class="close" id="folder-modal-close">&times;</span>
+      </div>
+      <div class="modal-body">
+        <div id="folder-modal-content">
+          <!-- 动态内容 -->
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="folder-modal-confirm" class="btn-primary">确认</button>
+        <button id="folder-modal-cancel" class="btn-secondary">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 右键菜单 -->
+  <div id="context-menu" class="context-menu">
+    <div class="context-menu-item" data-action="open">📂 打开</div>
+    <div class="context-menu-item" data-action="rename">✏️ 重命名</div>
+    <div class="context-menu-item" data-action="delete">🗑️ 删除</div>
+    <div class="context-menu-separator"></div>
+    <div class="context-menu-item" data-action="info">ℹ️ 属性</div>
+  </div>
+
+  <!-- Chrome Plus V2.1.1 脚本 -->
   <script src="websocket-api.js"></script>
   <script src="api.js"></script>
   <script src="chat.js"></script>
+  <script src="file-manager.js"></script>
 </body>
 </html>

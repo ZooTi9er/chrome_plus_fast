@@ -398,6 +398,37 @@ class ChatWebSocketRequest(BaseModel):
     proxy_config: Optional[ProxyConfig] = None
     api_config: Optional[Dict[str, Any]] = None
 
+# --- 文件夹管理数据模型 ---
+class FolderNode(BaseModel):
+    """文件夹节点模型"""
+    name: str
+    path: str
+    type: str  # "file" or "folder"
+    size: Optional[int] = None
+    modified: Optional[str] = None
+    children: Optional[List['FolderNode']] = None
+    expanded: bool = False
+
+class FolderCreateRequest(BaseModel):
+    """创建文件夹请求模型"""
+    path: str
+    name: str
+
+class FolderDeleteRequest(BaseModel):
+    """删除文件夹请求模型"""
+    path: str
+
+class FolderRenameRequest(BaseModel):
+    """重命名文件夹请求模型"""
+    old_path: str
+    new_name: str
+
+class FolderTreeResponse(BaseModel):
+    """文件夹树响应模型"""
+    tree: FolderNode
+    total_files: int
+    total_folders: int
+
 # --- FastAPI 应用实例 ---
 app = FastAPI(
     title="Chrome Plus V2.1.1 API",
@@ -707,6 +738,146 @@ def backup_file(name: str, backup_dir_name: str = "backups") -> str:
 
     backup_target_dir_relative = Path(backup_dir_name)
     backup_target_dir_abs = (base_dir / backup_target_dir_relative).resolve()
+
+# --- 文件夹管理功能函数 ---
+def get_folder_tree(path: str = ".", max_depth: int = 3) -> Dict[str, Any]:
+    """获取文件夹树状结构"""
+    print(f"(get_folder_tree '{path}' max_depth={max_depth})")
+
+    target_path = base_dir / path
+    ok, msg = _validate_path(target_path, check_existence=True, expect_dir=True)
+    if not ok:
+        return {"error": msg}
+
+    def build_tree_node(current_path: Path, current_depth: int = 0) -> Dict[str, Any]:
+        """递归构建树节点"""
+        try:
+            stat = current_path.stat()
+            relative_path = str(current_path.relative_to(base_dir))
+
+            node = {
+                "name": current_path.name,
+                "path": relative_path if relative_path != "." else "",
+                "type": "folder" if current_path.is_dir() else "file",
+                "modified": datetime.datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M:%S'),
+                "expanded": False
+            }
+
+            if current_path.is_file():
+                node["size"] = stat.st_size
+            else:
+                node["children"] = []
+                if current_depth < max_depth:
+                    try:
+                        for item in sorted(current_path.iterdir(), key=lambda x: (x.is_file(), x.name.lower())):
+                            # 验证子路径安全性
+                            ok_child, _ = _validate_path(item, check_existence=True)
+                            if ok_child:
+                                child_node = build_tree_node(item, current_depth + 1)
+                                node["children"].append(child_node)
+                    except PermissionError:
+                        pass  # 跳过无权限访问的目录
+
+            return node
+        except Exception as e:
+            return {
+                "name": current_path.name,
+                "path": str(current_path.relative_to(base_dir)),
+                "type": "error",
+                "error": str(e)
+            }
+
+    try:
+        tree = build_tree_node(target_path.resolve())
+
+        # 统计文件和文件夹数量
+        def count_items(node: Dict[str, Any]) -> tuple[int, int]:
+            files, folders = 0, 0
+            if node.get("type") == "file":
+                files = 1
+            elif node.get("type") == "folder":
+                folders = 1
+                for child in node.get("children", []):
+                    child_files, child_folders = count_items(child)
+                    files += child_files
+                    folders += child_folders
+            return files, folders
+
+        total_files, total_folders = count_items(tree)
+
+        return {
+            "tree": tree,
+            "total_files": total_files,
+            "total_folders": total_folders - 1  # 减去根目录
+        }
+    except Exception as e:
+        return {"error": f"构建文件夹树失败: {e}"}
+
+def delete_folder(path: str) -> str:
+    """删除文件夹（递归删除）"""
+    print(f"(delete_folder '{path}')")
+
+    target_path = base_dir / path
+    ok, msg = _validate_path(target_path, check_existence=True, expect_dir=True)
+    if not ok:
+        return msg
+
+    try:
+        import shutil
+        shutil.rmtree(target_path)
+        return f"文件夹 '{path}' 及其所有内容已删除成功。"
+    except Exception as e:
+        return f"删除文件夹 '{path}' 时发生错误：{e}"
+
+def get_folder_info(path: str) -> Dict[str, Any]:
+    """获取文件夹详细信息"""
+    print(f"(get_folder_info '{path}')")
+
+    target_path = base_dir / path
+    ok, msg = _validate_path(target_path, check_existence=True)
+    if not ok:
+        return {"error": msg}
+
+    try:
+        stat = target_path.stat()
+
+        info = {
+            "name": target_path.name,
+            "path": str(target_path.relative_to(base_dir)),
+            "type": "folder" if target_path.is_dir() else "file",
+            "modified": datetime.datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M:%S'),
+            "created": datetime.datetime.fromtimestamp(stat.st_ctime).strftime('%Y-%m-%d %H:%M:%S'),
+        }
+
+        if target_path.is_file():
+            info["size"] = stat.st_size
+        else:
+            # 计算文件夹大小和文件数量
+            total_size = 0
+            file_count = 0
+            folder_count = 0
+
+            for item in target_path.rglob("*"):
+                ok_item, _ = _validate_path(item, check_existence=True)
+                if ok_item:
+                    if item.is_file():
+                        try:
+                            total_size += item.stat().st_size
+                            file_count += 1
+                        except:
+                            pass
+                    elif item.is_dir():
+                        folder_count += 1
+
+            info.update({
+                "total_size": total_size,
+                "file_count": file_count,
+                "folder_count": folder_count
+            })
+
+        return info
+    except Exception as e:
+        return {"error": f"获取文件夹信息失败: {e}"}
     
     ok_dest_dir, msg_dest_dir = _validate_path(backup_target_dir_abs, check_existence=False)
     if not ok_dest_dir: return msg_dest_dir
@@ -833,6 +1004,10 @@ BASE_SYSTEM_PROMPT = f"""你是 ShellAI，一个经验丰富的程序员助手�
   `extract_archive(archive_name: str, destination_path: str = ".", specific_members: list[str] = None)`: 解压归档文件。
   `backup_file(name: str, backup_dir_name: str = "backups")`: 备份文件。
   `get_system_info()`: 获取本机系统信息。
+- 文件夹管理 (增强功能):
+  `get_folder_tree(path: str = ".", max_depth: int = 3)`: 获取文件夹树状结构，包含文件和文件夹的详细信息。
+  `delete_folder(path: str)`: 递归删除文件夹及其所有内容 (谨慎使用)。
+  `get_folder_info(path: str)`: 获取文件夹详细信息，包括大小、文件数量等统计信息。
 - 网络搜索:
   `tavily_search_tool(query: str)`: 当你需要查找当前知识库之外的信息、实时信息或进行广泛的网络搜索时使用此工具。
 
@@ -870,7 +1045,11 @@ def create_intelligent_agent(proxy_config: Optional[Dict] = None):
             'replace_in_file': replace_in_file,
             'archive_files': archive_files,
             'extract_archive': extract_archive,
-            'backup_file': backup_file
+            'backup_file': backup_file,
+            # 新增文件夹管理工具
+            'get_folder_tree': lambda path=".", max_depth=3: get_folder_tree(path, max_depth),
+            'delete_folder': delete_folder,
+            'get_folder_info': get_folder_info
         },
         'system_prompt': BASE_SYSTEM_PROMPT
     }
@@ -1160,6 +1339,75 @@ async def test_proxy_endpoint(proxy_config: ProxyConfig):
         return {"success": success, "message": message}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"代理测试失败: {str(e)}")
+
+# --- 文件夹管理API端点 ---
+@app.get("/api/folders/tree", response_model=FolderTreeResponse)
+async def get_folder_tree_endpoint(path: str = ".", max_depth: int = 3):
+    """获取文件夹树状结构"""
+    try:
+        result = get_folder_tree(path, max_depth)
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=result["error"])
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取文件夹树失败: {str(e)}")
+
+@app.post("/api/folders/create")
+async def create_folder_endpoint(request: FolderCreateRequest):
+    """创建文件夹"""
+    try:
+        folder_path = f"{request.path}/{request.name}".strip("/")
+        result = create_directory(folder_path)
+        if result.startswith("错误") or result.startswith("失败"):
+            raise HTTPException(status_code=400, detail=result)
+        return {"success": True, "message": result}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"创建文件夹失败: {str(e)}")
+
+@app.delete("/api/folders/delete")
+async def delete_folder_endpoint(request: FolderDeleteRequest):
+    """删除文件夹"""
+    try:
+        result = delete_folder(request.path)
+        if result.startswith("错误") or "失败" in result:
+            raise HTTPException(status_code=400, detail=result)
+        return {"success": True, "message": result}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"删除文件夹失败: {str(e)}")
+
+@app.post("/api/folders/rename")
+async def rename_folder_endpoint(request: FolderRenameRequest):
+    """重命名文件夹"""
+    try:
+        # 构建新路径
+        old_path = Path(request.old_path)
+        new_path = old_path.parent / request.new_name
+
+        result = rename_file(request.old_path, str(new_path))
+        if result.startswith("错误") or "失败" in result:
+            raise HTTPException(status_code=400, detail=result)
+        return {"success": True, "message": result}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"重命名文件夹失败: {str(e)}")
+
+@app.get("/api/folders/info")
+async def get_folder_info_endpoint(path: str):
+    """获取文件夹详细信息"""
+    try:
+        result = get_folder_info(path)
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=result["error"])
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取文件夹信息失败: {str(e)}")
 
 def main():
     """主函数 - 启动FastAPI服务"""
